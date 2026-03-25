@@ -6,15 +6,28 @@ from django.conf import settings
 
 class Expense(models.Model):
     CATEGORIES = [
-        ('Food & Dining',  'Food & Dining'),
-        ('Transport',      'Transport'),
-        ('Shopping',       'Shopping'),
-        ('Entertainment',  'Entertainment'),
-        ('Health',         'Health'),
-        ('Housing',        'Housing'),
-        ('Education',      'Education'),
-        ('Other',          'Other'),
+        ('Food & Dining',          'Food & Dining'),
+        ('Transport',              'Transport'),
+        ('Shopping',               'Shopping'),
+        ('Entertainment',          'Entertainment'),
+        ('Health',                 'Health'),
+        ('Housing',                'Housing'),
+        ('Education',              'Education'),
+        ('Gym & Fitness',          'Gym & Fitness'),
+        ('Subscriptions',          'Subscriptions'),
+        ('Insurance',              'Insurance'),
+        ('Clothing & Shopping',    'Clothing & Shopping'),
+        ('Personal Care & Beauty', 'Personal Care & Beauty'),
+        ('Gifts & Donations',      'Gifts & Donations'),
+        ('Bills & Utilities',      'Bills & Utilities'),
+        ('Medical & Health',       'Medical & Health'),
+        ('Education & Books',      'Education & Books'),
+        ('Abroad Expense',         'Abroad Expense'),
+        ('Other',                  'Other'),
+        ('Immigration',            'Immigration'),
+
     ]
+
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='expenses')
     title      = models.CharField(max_length=255)
     amount     = models.DecimalField(max_digits=10, decimal_places=2)
