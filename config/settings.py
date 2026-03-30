@@ -11,9 +11,12 @@ SECRET_KEY = 'django-insecure-change-this-in-production-use-a-long-random-string
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
-
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
-
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'sarathpeethu.pythonanywhere.com',
+    '.pythonanywhere.com',
+]
 # ── Installed Apps ────────────────────────────
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -100,6 +103,7 @@ AUTH_USER_MODEL = 'authentication.User'
 # Allows React (localhost:3000) to talk to Django (localhost:8000)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "https://expenseiq-frontend-ten.vercel.app",
 ]
 
 # ── REST Framework ────────────────────────────
