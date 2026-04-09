@@ -112,7 +112,8 @@ class DebtMarkPaidOffView(APIView):
             return Response(DebtSerializer(debt).data)
         except Debt.DoesNotExist:
             return Response({'error': 'Debt not found'}, status=status.HTTP_404_NOT_FOUND)
-
+        
+from django.utils               import timezone
 
 class PaymentRecordListCreateView(APIView):
     """
@@ -132,12 +133,16 @@ class PaymentRecordListCreateView(APIView):
         note    = request.data.get('note', '')
         date    = request.data.get('date', timezone.now().date())
 
+        # ── Validate debt exists and belongs to user ──
         try:
             debt = Debt.objects.get(pk=debt_id, user=request.user)
         except Debt.DoesNotExist:
-            return Response({'error': 'Debt not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {'error': 'Debt not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # Record the payment
+        # ── Record the payment ──
         payment = PaymentRecord.objects.create(
             user   = request.user,
             debt   = debt,
@@ -146,11 +151,33 @@ class PaymentRecordListCreateView(APIView):
             note   = note,
         )
 
-        # Reduce debt balance
+        # ── Reduce debt balance ──
         from decimal import Decimal
         new_balance      = max(Decimal('0'), debt.balance - Decimal(str(amount)))
         debt.balance     = new_balance
         debt.is_paid_off = new_balance == 0
+
+        # ── Auto advance next payment date by 1 month ──
+        # Only advance if payment date is ON or AFTER current due date
+        # This prevents double-advancing in the same billing period
+        if debt.next_payment_date and not debt.is_paid_off:
+            from dateutil.relativedelta import relativedelta
+            from datetime               import date as date_type
+
+            # Convert date to date object if it's a string
+            if isinstance(date, str):
+                payment_date = date_type.fromisoformat(date)
+            elif isinstance(date, date_type):
+                payment_date = date
+            else:
+                payment_date = timezone.now().date()
+
+            current_due = debt.next_payment_date
+
+            # Only advance if paying on or after due date
+            if payment_date >= current_due:
+                debt.next_payment_date = current_due + relativedelta(months=1)
+
         debt.save()
 
         return Response({
