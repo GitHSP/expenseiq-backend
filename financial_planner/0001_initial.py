@@ -1,0 +1,215 @@
+from django.conf import settings
+from django.db import migrations, models
+import django.core.validators
+import django.db.models.deletion
+from decimal import Decimal
+
+
+class Migration(migrations.Migration):
+
+    initial = True
+
+    dependencies = [
+        ("auth", "0012_alter_user_first_name_max_length"),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="Debt",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("name", models.CharField(max_length=100)),
+                ("debt_type", models.CharField(
+                    choices=[
+                        ("credit_card", "Credit Card"),
+                        ("loan", "Loan"),
+                        ("line_of_credit", "Line of Credit"),
+                        ("other", "Other"),
+                    ],
+                    default="credit_card",
+                    max_length=20,
+                )),
+                ("current_balance", models.DecimalField(
+                    decimal_places=2,
+                    max_digits=10,
+                    validators=[django.core.validators.MinValueValidator(Decimal("0.00"))],
+                )),
+                ("annual_interest_rate", models.DecimalField(decimal_places=2, max_digits=5)),
+                ("minimum_payment", models.DecimalField(decimal_places=2, max_digits=8)),
+                ("credit_limit", models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
+                ("due_day", models.PositiveSmallIntegerField(blank=True, null=True)),
+                ("avalanche_order", models.PositiveSmallIntegerField(default=1)),
+                ("is_active", models.BooleanField(default=True)),
+                ("paid_off_date", models.DateField(blank=True, null=True)),
+                ("notes", models.TextField(blank=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("user", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="debts",
+                    to=settings.AUTH_USER_MODEL,
+                )),
+            ],
+            options={"ordering": ["avalanche_order"]},
+        ),
+        migrations.CreateModel(
+            name="EmergencyFund",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("current_balance", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("target_amount", models.DecimalField(decimal_places=2, default=Decimal("1000.00"), max_digits=10)),
+                ("monthly_contribution", models.DecimalField(decimal_places=2, default=Decimal("100.00"), max_digits=8)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("user", models.OneToOneField(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="emergency_fund",
+                    to=settings.AUTH_USER_MODEL,
+                )),
+            ],
+        ),
+        migrations.CreateModel(
+            name="MonthlyPlan",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("year", models.PositiveSmallIntegerField()),
+                ("month", models.PositiveSmallIntegerField()),
+                ("biweekly_income", models.DecimalField(decimal_places=2, default=Decimal("1100.00"), max_digits=10)),
+                ("second_job_income", models.DecimalField(decimal_places=2, default=Decimal("925.00"), max_digits=10)),
+                ("freelance_income", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("num_paychecks", models.PositiveSmallIntegerField(default=2)),
+                ("is_three_paycheck_month", models.BooleanField(default=False)),
+                ("total_income", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("total_fixed_expenses", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("total_debt_payments", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("surplus_to_avalanche", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("emergency_fund_contribution", models.DecimalField(decimal_places=2, default=Decimal("100.00"), max_digits=8)),
+                ("is_finalized", models.BooleanField(default=False)),
+                ("notes", models.TextField(blank=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("user", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="monthly_plans",
+                    to=settings.AUTH_USER_MODEL,
+                )),
+            ],
+            options={"ordering": ["year", "month"]},
+        ),
+        migrations.CreateModel(
+            name="PaycheckAllocation",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("paycheck_number", models.PositiveSmallIntegerField()),
+                ("paycheck_date", models.DateField()),
+                ("source", models.CharField(
+                    choices=[
+                        ("biweekly", "Biweekly Job"),
+                        ("second_job", "2nd Job + Tips"),
+                        ("freelance", "Freelance"),
+                    ],
+                    max_length=20,
+                )),
+                ("gross_amount", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("allocated_to_savings", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("allocated_to_debts", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("allocated_to_expenses", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("allocated_to_avalanche", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("remaining", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("notes", models.TextField(blank=True)),
+                ("monthly_plan", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="paycheck_allocations",
+                    to="financial_planner.monthlyplan",
+                )),
+            ],
+            options={"ordering": ["paycheck_date"]},
+        ),
+        migrations.CreateModel(
+            name="ChecklistItem",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("label", models.CharField(max_length=200)),
+                ("amount", models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
+                ("due_day", models.PositiveSmallIntegerField(blank=True, null=True)),
+                ("category", models.CharField(
+                    choices=[
+                        ("savings", "Savings"),
+                        ("debt_min", "Debt Minimum"),
+                        ("debt_extra", "Debt Extra Payment"),
+                        ("fixed_expense", "Fixed Expense"),
+                        ("temp_payment", "Temporary Payment"),
+                        ("auto_debit", "Auto Debit ⚠️"),
+                        ("transfer", "Transfer"),
+                        ("income", "Income Received"),
+                    ],
+                    max_length=20,
+                )),
+                ("is_auto_debit", models.BooleanField(default=False)),
+                ("is_completed", models.BooleanField(default=False)),
+                ("completed_at", models.DateTimeField(blank=True, null=True)),
+                ("sort_order", models.PositiveSmallIntegerField(default=0)),
+                ("linked_debt", models.ForeignKey(
+                    blank=True,
+                    null=True,
+                    on_delete=django.db.models.deletion.SET_NULL,
+                    related_name="checklist_items",
+                    to="financial_planner.debt",
+                )),
+                ("monthly_plan", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="checklist_items",
+                    to="financial_planner.monthlyplan",
+                )),
+                ("paycheck_allocation", models.ForeignKey(
+                    blank=True,
+                    null=True,
+                    on_delete=django.db.models.deletion.SET_NULL,
+                    related_name="checklist_items",
+                    to="financial_planner.paycheckallocation",
+                )),
+            ],
+            options={"ordering": ["sort_order", "due_day"]},
+        ),
+        migrations.CreateModel(
+            name="MonthlyDebtSnapshot",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("opening_balance", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("interest_charged", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("balance_after_interest", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("payment_made", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("extra_payment", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("closing_balance", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("planned_payment", models.DecimalField(decimal_places=2, default=Decimal("0.00"), max_digits=10)),
+                ("actual_payment", models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
+                ("is_paid_off_this_month", models.BooleanField(default=False)),
+                ("debt", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="snapshots",
+                    to="financial_planner.debt",
+                )),
+                ("monthly_plan", models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name="debt_snapshots",
+                    to="financial_planner.monthlyplan",
+                )),
+            ],
+            options={"ordering": ["debt__avalanche_order"]},
+        ),
+        migrations.AddConstraint(
+            model_name="debt",
+            constraint=models.UniqueConstraint(fields=["user", "name"], name="unique_debt_per_user"),
+        ),
+        migrations.AlterUniqueTogether(
+            name="monthlyplan",
+            unique_together={("user", "year", "month")},
+        ),
+        migrations.AlterUniqueTogether(
+            name="paycheckallocation",
+            unique_together={("monthly_plan", "paycheck_number", "source")},
+        ),
+        migrations.AlterUniqueTogether(
+            name="monthlydebtsnapshotshot",
+            unique_together={("monthly_plan", "debt")},
+        ),
+    ]
