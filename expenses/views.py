@@ -1,16 +1,10 @@
-# expenses/views.py
-
-from rest_framework             import generics, status
+from rest_framework             import generics
 from rest_framework.response    import Response
 from rest_framework.views       import APIView
 from rest_framework.permissions import IsAuthenticated
-from django.utils               import timezone
 
-from .models      import Expense, Budget, Income, Debt, PaymentRecord
-from .serializers import (
-    ExpenseSerializer, BudgetSerializer,
-    IncomeSerializer, DebtSerializer, PaymentRecordSerializer
-)
+from .models      import Expense, Budget, Income
+from .serializers import ExpenseSerializer, BudgetSerializer, IncomeSerializer
 
 
 class ExpenseListCreateView(generics.ListCreateAPIView):
@@ -43,8 +37,9 @@ class BudgetListView(APIView):
     def post(self, request):
         category = request.data.get('category')
         amount   = request.data.get('amount')
-        budget, created = Budget.objects.update_or_create(
-            user=request.user, category=category,
+        budget, _ = Budget.objects.update_or_create(
+            user=request.user,
+            category=category,
             defaults={'amount': amount}
         )
         return Response(BudgetSerializer(budget).data)
@@ -67,120 +62,3 @@ class IncomeDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return Income.objects.filter(user=self.request.user)
-
-
-class DebtListCreateView(generics.ListCreateAPIView):
-    """
-    GET  /api/debts/ → list all debts for logged in user
-    POST /api/debts/ → create a new debt
-    """
-    serializer_class   = DebtSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Debt.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-
-class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    GET    /api/debts/<id>/ → get one debt
-    PUT    /api/debts/<id>/ → update one debt
-    DELETE /api/debts/<id>/ → delete one debt
-    """
-    serializer_class   = DebtSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Debt.objects.filter(user=self.request.user)
-
-
-class DebtMarkPaidOffView(APIView):
-    """
-    POST /api/debts/<id>/paid-off/ → mark debt as paid off
-    """
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        try:
-            debt = Debt.objects.get(pk=pk, user=request.user)
-            debt.is_paid_off = True
-            debt.balance     = 0
-            debt.save()
-            return Response(DebtSerializer(debt).data)
-        except Debt.DoesNotExist:
-            return Response({'error': 'Debt not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-from django.utils               import timezone
-
-class PaymentRecordListCreateView(APIView):
-    """
-    GET  /api/payments/ → list all payment records
-    POST /api/payments/ → record a new payment against a debt
-    """
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        payments   = PaymentRecord.objects.filter(user=request.user)
-        serializer = PaymentRecordSerializer(payments, many=True)
-        return Response(serializer.data)
-
-    def post(self, request):
-        debt_id = request.data.get('debt')
-        amount  = request.data.get('amount')
-        note    = request.data.get('note', '')
-        date    = request.data.get('date', timezone.now().date())
-
-        # ── Validate debt exists and belongs to user ──
-        try:
-            debt = Debt.objects.get(pk=debt_id, user=request.user)
-        except Debt.DoesNotExist:
-            return Response(
-                {'error': 'Debt not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # ── Record the payment ──
-        payment = PaymentRecord.objects.create(
-            user   = request.user,
-            debt   = debt,
-            amount = amount,
-            date   = date,
-            note   = note,
-        )
-
-        # ── Reduce debt balance ──
-        from decimal import Decimal
-        new_balance      = max(Decimal('0'), debt.balance - Decimal(str(amount)))
-        debt.balance     = new_balance
-        debt.is_paid_off = new_balance == 0
-
-        # ── Auto advance next payment date by 1 month ──
-        # Only advance if payment date is ON or AFTER current due date
-        # This prevents double-advancing in the same billing period
-        if debt.next_payment_date and not debt.is_paid_off:
-            from dateutil.relativedelta import relativedelta
-            from datetime               import date as date_type
-
-            # Convert date to date object if it's a string
-            if isinstance(date, str):
-                payment_date = date_type.fromisoformat(date)
-            elif isinstance(date, date_type):
-                payment_date = date
-            else:
-                payment_date = timezone.now().date()
-
-            current_due = debt.next_payment_date
-
-            # Only advance if paying on or after due date
-            if payment_date >= current_due:
-                debt.next_payment_date = current_due + relativedelta(months=1)
-
-        debt.save()
-
-        return Response({
-            'payment': PaymentRecordSerializer(payment).data,
-            'debt':    DebtSerializer(debt).data,
-        }, status=status.HTTP_201_CREATED)

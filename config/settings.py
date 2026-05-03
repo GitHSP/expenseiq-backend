@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     # Our apps
     'authentication',
     'expenses',
+    'financial_planner',
 ]
 
 # ── Middleware ────────────────────────────────
