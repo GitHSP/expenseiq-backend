@@ -2,7 +2,8 @@ from rest_framework import serializers
 from django.utils   import timezone
 from .models import (
     Debt, EmergencyFund, MonthlyPlan,
-    PaycheckAllocation, ChecklistItem, MonthlyDebtSnapshot
+    PaycheckAllocation, ChecklistItem, MonthlyDebtSnapshot,
+    PaycheckConfig,
 )
 
 
@@ -115,3 +116,14 @@ class MonthlyPlanSerializer(serializers.ModelSerializer):
             'debt_snapshots',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class PaycheckConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = PaycheckConfig
+        fields = [
+            'id', 'first_pay_date', 'biweekly_amount',
+            'second_job_day', 'second_job_amount',
+            'second_job_tips', 'extra_payment', 'updated_at',
+        ]
+        read_only_fields = ['id', 'updated_at']
