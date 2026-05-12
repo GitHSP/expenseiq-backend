@@ -252,3 +252,57 @@ class MonthlyDebtSnapshot(models.Model):
         )
         self.is_paid_off_this_month = self.closing_balance == Decimal("0.00") and self.opening_balance > 0
         super().save(*args, **kwargs)
+
+class PaycheckConfig(models.Model):
+    """
+    Stores user's paycheck configuration.
+    Used to auto-calculate pay dates each month.
+    """
+    user               = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="paycheck_config"
+    )
+    first_pay_date     = models.DateField()
+    biweekly_amount    = models.DecimalField(max_digits=10, decimal_places=2, default=1100)
+    second_job_day     = models.PositiveSmallIntegerField(default=20)
+    second_job_amount  = models.DecimalField(max_digits=10, decimal_places=2, default=625)
+    second_job_tips    = models.DecimalField(max_digits=10, decimal_places=2, default=300)
+    extra_payment      = models.DecimalField(max_digits=10, decimal_places=2, default=150)
+    created_at         = models.DateTimeField(auto_now_add=True)
+    updated_at         = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.email} — Pay config"
+
+    def get_pay_dates_for_month(self, year, month):
+        from datetime import timedelta
+        import calendar
+
+        last_day   = calendar.monthrange(year, month)[1]
+        month_end  = self.first_pay_date.replace(year=year, month=month, day=last_day)
+        month_start= self.first_pay_date.replace(year=year, month=month, day=1)
+
+        pay_dates = []
+
+        # Go forward from anchor
+        current = self.first_pay_date
+        while current <= month_end:
+            if current.year == year and current.month == month:
+                pay_dates.append(current)
+            current = current + timedelta(days=14)
+
+        # Go backward from anchor
+        current = self.first_pay_date - timedelta(days=14)
+        while current >= month_start:
+            if current.year == year and current.month == month:
+                pay_dates.append(current)
+            current = current - timedelta(days=14)
+
+        return sorted(set(pay_dates))
+
+    def get_second_job_date_for_month(self, year, month):
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        day      = min(self.second_job_day, last_day)
+        return self.first_pay_date.replace(year=year, month=month, day=day)
