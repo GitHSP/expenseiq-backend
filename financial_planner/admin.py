@@ -1,7 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Debt, EmergencyFund, MonthlyPlan,
-    PaycheckAllocation, ChecklistItem, MonthlyDebtSnapshot
+    Debt, EmergencyFund, MonthlyPlan, ChecklistItem,
 )
 
 @admin.register(Debt)
@@ -23,11 +22,3 @@ class MonthlyPlanAdmin(admin.ModelAdmin):
 class ChecklistItemAdmin(admin.ModelAdmin):
     list_display = ['label', 'category', 'amount', 'is_completed', 'is_auto_debit']
     list_filter  = ['category', 'is_completed', 'is_auto_debit']
-
-@admin.register(PaycheckAllocation)
-class PaycheckAllocationAdmin(admin.ModelAdmin):
-    list_display = ['monthly_plan', 'paycheck_number', 'source', 'gross_amount', 'remaining']
-
-@admin.register(MonthlyDebtSnapshot)
-class MonthlyDebtSnapshotAdmin(admin.ModelAdmin):
-    list_display = ['monthly_plan', 'debt', 'opening_balance', 'closing_balance', 'is_paid_off_this_month']
