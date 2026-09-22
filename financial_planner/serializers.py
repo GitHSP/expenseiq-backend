@@ -1,9 +1,7 @@
 from rest_framework import serializers
 from django.utils   import timezone
 from .models import (
-    Debt, EmergencyFund, MonthlyPlan,
-    PaycheckAllocation, ChecklistItem, MonthlyDebtSnapshot,
-    PaycheckConfig,
+    Debt, EmergencyFund, MonthlyPlan, ChecklistItem,
 )
 
 
@@ -45,24 +43,11 @@ class EmergencyFundSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'updated_at']
 
 
-class PaycheckAllocationSerializer(serializers.ModelSerializer):
-    class Meta:
-        model  = PaycheckAllocation
-        fields = [
-            'id', 'paycheck_number', 'paycheck_date',
-            'source', 'gross_amount',
-            'allocated_to_savings', 'allocated_to_debts',
-            'allocated_to_expenses', 'allocated_to_avalanche',
-            'remaining', 'notes',
-        ]
-        read_only_fields = ['id']
-
-
 class ChecklistItemSerializer(serializers.ModelSerializer):
     class Meta:
         model  = ChecklistItem
         fields = [
-            'id', 'paycheck_allocation', 'label',
+            'id', 'label',
             'amount', 'due_day', 'category',
             'is_auto_debit', 'is_completed',
             'completed_at', 'sort_order', 'linked_debt',
@@ -70,39 +55,15 @@ class ChecklistItemSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'completed_at']
 
 
-class MonthlyDebtSnapshotSerializer(serializers.ModelSerializer):
-    debt_name = serializers.CharField(source='debt.name', read_only=True)
-    debt_type = serializers.CharField(source='debt.debt_type', read_only=True)
-
-    class Meta:
-        model  = MonthlyDebtSnapshot
-        fields = [
-            'id', 'debt', 'debt_name', 'debt_type',
-            'opening_balance', 'interest_charged',
-            'balance_after_interest', 'payment_made',
-            'extra_payment', 'closing_balance',
-            'planned_payment', 'actual_payment',
-            'is_paid_off_this_month',
-        ]
-        read_only_fields = [
-            'id', 'balance_after_interest',
-            'closing_balance', 'is_paid_off_this_month',
-        ]
-
-
 class MonthlyPlanSerializer(serializers.ModelSerializer):
-    paycheck_allocations = PaycheckAllocationSerializer(many=True, read_only=True)
     checklist_items      = ChecklistItemSerializer(many=True, read_only=True)
-    debt_snapshots       = MonthlyDebtSnapshotSerializer(many=True, read_only=True)
     effective_income     = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model  = MonthlyPlan
         fields = [
             'id', 'year', 'month',
-            'biweekly_income', 'second_job_income',
-            'freelance_income', 'num_paychecks',
-            'is_three_paycheck_month',
+            'freelance_income',
             'total_income', 'total_fixed_expenses',
             'total_debt_payments', 'surplus_to_avalanche',
             'emergency_fund_contribution',
@@ -111,19 +72,6 @@ class MonthlyPlanSerializer(serializers.ModelSerializer):
             # computed
             'effective_income',
             # nested
-            'paycheck_allocations',
             'checklist_items',
-            'debt_snapshots',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-
-
-class PaycheckConfigSerializer(serializers.ModelSerializer):
-    class Meta:
-        model  = PaycheckConfig
-        fields = [
-            'id', 'first_pay_date', 'biweekly_amount',
-            'second_job_day', 'second_job_amount',
-            'second_job_tips', 'extra_payment', 'updated_at',
-        ]
-        read_only_fields = ['id', 'updated_at']

@@ -1,22 +1,45 @@
 # config/settings.py
 
+import os
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Loads backend/.env locally. In production (PythonAnywhere/Render), set
+# these as real environment variables in the host's dashboard instead —
+# .env is gitignored and never deployed.
+load_dotenv(BASE_DIR / '.env')
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-change-this-in-production-use-a-long-random-string'
+# Never hardcode this — set SECRET_KEY in backend/.env (local) or in your
+# host's environment variables (production).
+SECRET_KEY = os.environ['SECRET_KEY']
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Defaults to False — set DEBUG=True in backend/.env for local development.
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+
 ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    'sarathpeethu.pythonanywhere.com',
-    '.pythonanywhere.com',
+    h.strip() for h in os.environ.get(
+        'ALLOWED_HOSTS',
+        'localhost,127.0.0.1,sarathpeethu.pythonanywhere.com,.pythonanywhere.com'
+    ).split(',') if h.strip()
 ]
+
+# Used to build the password-reset link sent by email — point this at the
+# real frontend URL in production (e.g. https://expenseiq-frontend-ten.vercel.app)
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+
+# ── AI Assistant (Claude API) ─────────────────
+# Server-side only — never sent to the frontend. Get a key at
+# https://console.anthropic.com/settings/keys and set it in backend/.env.
+# The chat feature is disabled (returns a clear error) until this is set.
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+ANTHROPIC_MODEL   = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
+
 # ── Installed Apps ────────────────────────────
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -36,6 +59,7 @@ INSTALLED_APPS = [
     'authentication',
     'expenses',
     'financial_planner',
+    'assistant',
 ]
 
 # ── Middleware ────────────────────────────────
@@ -115,6 +139,16 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Rate-limit unauthenticated requests — login/register/password-reset
+    # are AllowAny, so without this they're open to brute-forcing.
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '20/minute',
+        'user': '120/minute',
+    },
 }
 
 # ── JWT Settings ──────────────────────────────

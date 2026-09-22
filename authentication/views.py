@@ -141,7 +141,7 @@ class ForgotPasswordView(APIView):
             token = default_token_generator.make_token(user)
             uid   = urlsafe_base64_encode(force_bytes(user.pk))
             # Build reset link pointing to React app
-            reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
+            reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
             # Send email
             send_mail(
                 subject        = 'ExpenseIQ — Reset your password',
@@ -194,10 +194,6 @@ class ResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-from rest_framework.views       import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response    import Response
-from rest_framework             import status
 
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
