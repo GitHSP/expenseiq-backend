@@ -15,21 +15,26 @@ from decimal import Decimal, InvalidOperation
 
 from expenses.models import Expense, Income
 from expenses.serializers import ExpenseSerializer, IncomeSerializer
-from financial_planner.models import Debt, EmergencyFund, MonthlyPlan, ChecklistItem
+from financial_planner.models import Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem
 from financial_planner.serializers import (
     DebtSerializer, EmergencyFundSerializer, ChecklistItemSerializer, MonthlyPlanSerializer,
+    RecurringItemSerializer,
 )
 from financial_planner.services import (
     toggle_checklist_item as _toggle_checklist_item,
     recalculate_avalanche_order,
     generate_checklist as _generate_checklist,
     rollover_month as _rollover_month,
+    sync_current_month,
+    delete_recurring_item as _delete_recurring_item,
+    delete_debt as _delete_debt,
 )
 
 EXPENSE_CATEGORIES = [c[0] for c in Expense.CATEGORIES]
 INCOME_CATEGORIES = [c[0] for c in Income.CATEGORIES]
 DEBT_TYPES = [c[0] for c in Debt.DEBT_TYPE_CHOICES]
 CHECKLIST_CATEGORIES = [c[0] for c in ChecklistItem.CATEGORY_CHOICES]
+RECURRING_CATEGORIES = [c[0] for c in RecurringItem.CATEGORY_CHOICES]
 
 
 # ─────────────────────────────────────────────
@@ -265,6 +270,7 @@ def add_debt(user, name, debt_type=None, current_balance=0, annual_interest_rate
         due_day=due_day, notes=notes or "",
     )
     recalculate_avalanche_order(user)
+    sync_current_month(user)
     debt.refresh_from_db()
 
     return {
@@ -304,6 +310,7 @@ def update_debt(user, name, current_balance=None, annual_interest_rate=None,
 
     debt.save()
     recalculate_avalanche_order(user)
+    sync_current_month(user)
     debt.refresh_from_db()
 
     return {
@@ -318,9 +325,81 @@ def delete_debt(user, name, **kwargs):
     if error:
         return {"ok": False, "message": error}
     label = debt.name
-    debt.delete()
-    recalculate_avalanche_order(user)
+    _delete_debt(debt)
     return {"ok": True, "message": f"Deleted debt '{label}'."}
+
+
+def list_recurring_payments(user, **kwargs):
+    items = RecurringItem.objects.filter(user=user)
+    return {
+        "ok": True,
+        "recurring_payments": RecurringItemSerializer(items, many=True).data,
+    }
+
+
+def add_recurring_payment(user, label, amount, due_day=None, category="fixed_expense",
+                          is_auto_debit=False, notes="", **kwargs):
+    try:
+        amt = _to_decimal(amount)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    if RecurringItem.objects.filter(user=user, label__iexact=label).exists():
+        return {"ok": False, "message": f"A recurring payment named '{label}' already exists. Use update_recurring_payment instead."}
+
+    item = RecurringItem.objects.create(
+        user=user, label=label, amount=amt, due_day=due_day,
+        category=category if category in RECURRING_CATEGORIES else "fixed_expense",
+        is_auto_debit=bool(is_auto_debit), notes=notes or "",
+    )
+    sync_current_month(user)
+    return {
+        "ok": True,
+        "message": f"Added recurring {'income' if item.category == 'income' else 'payment'} '{item.label}' — ${item.amount} every month.",
+        "recurring_payment": RecurringItemSerializer(item).data,
+    }
+
+
+def update_recurring_payment(user, label, new_label=None, amount=None, due_day=None,
+                             category=None, is_auto_debit=None, is_active=None,
+                             notes=None, **kwargs):
+    item, error = _find_one(RecurringItem.objects.filter(user=user), "label", label, "recurring payment")
+    if error:
+        return {"ok": False, "message": error}
+
+    try:
+        if amount is not None:
+            item.amount = _to_decimal(amount)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    if new_label:
+        item.label = new_label
+    if due_day is not None:
+        item.due_day = due_day
+    if category in RECURRING_CATEGORIES:
+        item.category = category
+    if is_auto_debit is not None:
+        item.is_auto_debit = bool(is_auto_debit)
+    if is_active is not None:
+        item.is_active = bool(is_active)
+    if notes is not None:
+        item.notes = notes
+    item.save()
+    sync_current_month(user)
+
+    return {
+        "ok": True,
+        "message": f"Updated recurring payment '{item.label}' — ${item.amount}{'' if item.is_active else ' (paused)'}.",
+        "recurring_payment": RecurringItemSerializer(item).data,
+    }
+
+
+def delete_recurring_payment(user, label, **kwargs):
+    item, error = _find_one(RecurringItem.objects.filter(user=user), "label", label, "recurring payment")
+    if error:
+        return {"ok": False, "message": error}
+    item_label = item.label
+    _delete_recurring_item(item)
+    return {"ok": True, "message": f"Deleted recurring payment '{item_label}'."}
 
 
 def update_emergency_fund(user, current_balance=None, add_amount=None,
@@ -461,6 +540,10 @@ TOOL_HANDLERS = {
     "delete_checklist_item": delete_checklist_item,
     "generate_checklist": generate_checklist,
     "rollover_month": rollover_month,
+    "list_recurring_payments": list_recurring_payments,
+    "add_recurring_payment": add_recurring_payment,
+    "update_recurring_payment": update_recurring_payment,
+    "delete_recurring_payment": delete_recurring_payment,
 }
 
 # Tools whose successful result should be surfaced to the frontend as an
@@ -472,6 +555,7 @@ MUTATING_TOOLS = {
     "update_emergency_fund",
     "add_checklist_item", "toggle_checklist_item", "delete_checklist_item",
     "generate_checklist", "rollover_month",
+    "add_recurring_payment", "update_recurring_payment", "delete_recurring_payment",
 }
 
 
@@ -692,19 +776,74 @@ TOOL_SCHEMAS = [
     {
         "name": "generate_checklist",
         "description": (
-            "Auto-generate this month's checklist from the user's active debts (avalanche order) "
-            "plus an emergency-fund savings item if needed. Replaces any existing debt/savings "
-            "items for the current month. Requires at least one active debt."
+            "Re-sync this month's checklist with the user's recurring payments and active debts "
+            "(plus an emergency-fund savings item if needed). Manual and already-ticked items are "
+            "kept. Checklists are normally built automatically each month, so only use this when "
+            "the user asks to regenerate or refresh the checklist."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "rollover_month",
         "description": (
-            "Apply this month's interest to all active debts and create next month's plan/"
-            "checklist. Use when the user asks to roll over, start a new month, or close out "
-            "the current month."
+            "Create next month's plan early: applies next month's interest to all active debts now "
+            "and builds next month's checklist. Months roll over automatically on their own, so "
+            "only use this when the user explicitly asks to roll over early."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_recurring_payments",
+        "description": "List the user's recurring monthly payments and income sources (the permanent list each month's checklist is built from).",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "add_recurring_payment",
+        "description": (
+            "Add a payment or income source that repeats every month (rent, a bill, a transfer, "
+            "salary). It is added to this month's checklist and every future month's. Debts with "
+            "a balance (credit cards, loans, EMIs) belong in add_debt instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Name of the payment or income source, e.g. 'Rent', 'Salary'."},
+                "amount": {"type": "number", "description": "Monthly amount."},
+                "due_day": {"type": "integer", "description": "Day of the month it's due/received (1-31)."},
+                "category": {"type": "string", "enum": RECURRING_CATEGORIES, "description": "income for income sources; auto_debit for automatic withdrawals; transfer for money transfers; temp_payment for payments that will end; otherwise fixed_expense."},
+                "is_auto_debit": {"type": "boolean", "description": "True if it's withdrawn automatically."},
+                "notes": {"type": "string"},
+            },
+            "required": ["label", "amount"],
+        },
+    },
+    {
+        "name": "update_recurring_payment",
+        "description": "Change a recurring monthly payment/income (found by matching its label). Set is_active false to pause it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Label (or part of it) to find the recurring payment."},
+                "new_label": {"type": "string"},
+                "amount": {"type": "number"},
+                "due_day": {"type": "integer"},
+                "category": {"type": "string", "enum": RECURRING_CATEGORIES},
+                "is_auto_debit": {"type": "boolean"},
+                "is_active": {"type": "boolean"},
+                "notes": {"type": "string"},
+            },
+            "required": ["label"],
+        },
+    },
+    {
+        "name": "delete_recurring_payment",
+        "description": "Permanently remove a recurring monthly payment/income (found by matching its label).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Label (or part of it) to find the recurring payment."},
+            },
+            "required": ["label"],
+        },
     },
 ]

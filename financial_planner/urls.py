@@ -6,6 +6,10 @@ urlpatterns = [
     path('debts/',              views.DebtListCreateView.as_view(),              name='fp-debt-list'),
     path('debts/<int:pk>/',     views.DebtDetailView.as_view(),                  name='fp-debt-detail'),
 
+    # ── Recurring payments ──
+    path('recurring/',          views.RecurringItemListCreateView.as_view(),     name='fp-recurring-list'),
+    path('recurring/<int:pk>/', views.RecurringItemDetailView.as_view(),         name='fp-recurring-detail'),
+
     # ── Emergency Fund ──
     path('emergency-fund/',     views.EmergencyFundView.as_view(),               name='fp-emergency-fund'),
 

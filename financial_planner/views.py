@@ -7,15 +7,17 @@ from django.utils               import timezone
 from decimal                    import Decimal
 
 from .models import (
-    Debt, EmergencyFund, MonthlyPlan, ChecklistItem,
+    Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem,
 )
 from .serializers import (
     DebtSerializer, EmergencyFundSerializer, MonthlyPlanSerializer,
-    ChecklistItemSerializer,
+    ChecklistItemSerializer, RecurringItemSerializer,
 )
 from .services import (
     toggle_checklist_item, recalculate_avalanche_order,
     generate_checklist, rollover_month,
+    get_or_create_current_plan, sync_current_month, delete_recurring_item,
+    delete_debt,
 )
 
 
@@ -33,6 +35,7 @@ class DebtListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
         recalculate_avalanche_order(self.request.user)
+        sync_current_month(self.request.user)
 
 
 class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -45,10 +48,43 @@ class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         serializer.save()
         recalculate_avalanche_order(self.request.user)
+        sync_current_month(self.request.user)
 
     def perform_destroy(self, instance):
-        instance.delete()
-        recalculate_avalanche_order(self.request.user)
+        delete_debt(instance)
+
+
+# ─────────────────────────────────────────────
+# RECURRING ITEM VIEWS
+# Every change re-syncs this month's checklist so it reflects the
+# recurring list straight away (ticked items are left alone).
+# ─────────────────────────────────────────────
+
+class RecurringItemListCreateView(generics.ListCreateAPIView):
+    serializer_class   = RecurringItemSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return RecurringItem.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+        sync_current_month(self.request.user)
+
+
+class RecurringItemDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class   = RecurringItemSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return RecurringItem.objects.filter(user=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save()
+        sync_current_month(self.request.user)
+
+    def perform_destroy(self, instance):
+        delete_recurring_item(instance)
 
 
 # ─────────────────────────────────────────────
@@ -98,18 +134,17 @@ class MonthlyPlanDetailView(generics.RetrieveUpdateDestroyAPIView):
 class CurrentMonthPlanView(APIView):
     """
     GET /api/fp/plans/current/
-    Returns this month's plan — creates it if it doesn't exist yet.
+    Returns this month's plan. The first request of a new month creates it:
+    interest is applied to debts and the checklist is built from the
+    user's recurring items and debts. `rolled_over` is true on that request.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        now   = timezone.now()
-        plan, created = MonthlyPlan.objects.get_or_create(
-            user  = request.user,
-            year  = now.year,
-            month = now.month,
-        )
-        return Response(MonthlyPlanSerializer(plan).data)
+        plan, rolled_over = get_or_create_current_plan(request.user)
+        data = MonthlyPlanSerializer(plan).data
+        data["rolled_over"] = rolled_over
+        return Response(data)
 
 
 # ─────────────────────────────────────────────
@@ -200,8 +235,8 @@ class MonthlyRolloverView(APIView):
 class GenerateChecklistView(APIView):
     """
     POST /api/fp/plans/generate-checklist/
-    Auto-generates checklist items from user's debts.
-    Clears existing debt-related items and rebuilds them.
+    Re-syncs this month's checklist with the user's recurring items and
+    debts. Manual and already-ticked items are kept.
     """
     permission_classes = [IsAuthenticated]
 
@@ -212,7 +247,7 @@ class GenerateChecklistView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
-            "message":  f"Generated {len(created_items)} checklist items!",
+            "message":  f"Checklist synced — {len(created_items)} planned items.",
             "plan_id":  plan.id,
             "items":    ChecklistItemSerializer(created_items, many=True).data,
             "avalanche_target": DebtSerializer(top_debt).data if top_debt else None,

@@ -6,3 +6,5 @@ db.sqlite3
 .env
 staticfiles/
 *.sqlite3
+# Personal data files (e.g. planner imports)
+*.local.json

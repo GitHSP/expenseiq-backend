@@ -120,6 +120,40 @@ class MonthlyPlan(models.Model):
         return self.total_income + self.freelance_income
 
 
+class RecurringItem(models.Model):
+    """
+    A payment (or income source) that repeats every month — rent, bills,
+    transfers, salary. Each month's checklist is built from these plus the
+    user's active debts, so edits here carry into every future month.
+    """
+
+    CATEGORY_CHOICES = [
+        ("fixed_expense", "Fixed Expense"),
+        ("temp_payment", "Temporary Payment"),
+        ("auto_debit", "Auto Debit"),
+        ("transfer", "Transfer"),
+        ("income", "Income"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="recurring_items")
+    label = models.CharField(max_length=200)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0.00"))])
+    due_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="fixed_expense")
+    is_auto_debit = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["due_day", "label"]
+
+    def __str__(self):
+        return f"{self.label} ({self.amount})"
+
+
 class ChecklistItem(models.Model):
     """
     Interactive monthly checklist item (☐ → ✅).
@@ -150,6 +184,16 @@ class ChecklistItem(models.Model):
 
     linked_debt = models.ForeignKey(
         Debt,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checklist_items",
+    )
+
+    # Set when the item was generated from a RecurringItem, so the month's
+    # checklist can be re-synced after the recurring list changes.
+    recurring_item = models.ForeignKey(
+        RecurringItem,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
