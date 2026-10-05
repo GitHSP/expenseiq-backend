@@ -107,7 +107,7 @@ def generate_checklist(user):
         if not fund.is_funded:
             item = ChecklistItem.objects.create(
                 monthly_plan=plan,
-                label="Emergency Savings 🏦 — transfer FIRST on pay day",
+                label="Emergency Savings — transfer FIRST on pay day",
                 amount=fund.monthly_contribution,
                 due_day=1,
                 category="savings",
@@ -137,7 +137,7 @@ def generate_checklist(user):
     if top_debt:
         item = ChecklistItem.objects.create(
             monthly_plan=plan,
-            label=f"🎯 {top_debt.name} — EXTRA avalanche payment (all surplus)",
+            label=f"{top_debt.name} — EXTRA avalanche payment (all surplus)",
             amount=Decimal("0.00"),
             due_day=top_debt.due_day,
             category="debt_extra",
