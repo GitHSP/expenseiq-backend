@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Debt, EmergencyFund, MonthlyPlan, ChecklistItem,
+    Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem,
 )
 
 @admin.register(Debt)
@@ -22,3 +22,8 @@ class MonthlyPlanAdmin(admin.ModelAdmin):
 class ChecklistItemAdmin(admin.ModelAdmin):
     list_display = ['label', 'category', 'amount', 'is_completed', 'is_auto_debit']
     list_filter  = ['category', 'is_completed', 'is_auto_debit']
+
+@admin.register(RecurringItem)
+class RecurringItemAdmin(admin.ModelAdmin):
+    list_display = ['label', 'user', 'amount', 'due_day', 'category', 'is_auto_debit', 'is_active']
+    list_filter  = ['category', 'is_active', 'is_auto_debit']

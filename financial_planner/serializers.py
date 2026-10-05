@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.utils   import timezone
 from .models import (
-    Debt, EmergencyFund, MonthlyPlan, ChecklistItem,
+    Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem,
 )
 
 
@@ -51,8 +51,25 @@ class ChecklistItemSerializer(serializers.ModelSerializer):
             'amount', 'due_day', 'category',
             'is_auto_debit', 'is_completed',
             'completed_at', 'sort_order', 'linked_debt',
+            'recurring_item',
         ]
-        read_only_fields = ['id', 'completed_at']
+        read_only_fields = ['id', 'completed_at', 'recurring_item']
+
+
+class RecurringItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = RecurringItem
+        fields = [
+            'id', 'label', 'amount', 'due_day', 'category',
+            'is_auto_debit', 'is_active', 'notes',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_due_day(self, value):
+        if value is not None and not 1 <= value <= 31:
+            raise serializers.ValidationError("Due day must be between 1 and 31.")
+        return value
 
 
 class MonthlyPlanSerializer(serializers.ModelSerializer):
