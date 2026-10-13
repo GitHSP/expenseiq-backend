@@ -30,6 +30,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from activity.context import activity_context
 from financial_planner.models import Debt, MonthlyPlan, RecurringItem
 from financial_planner.services import recalculate_avalanche_order, sync_month_checklist
 
@@ -63,7 +64,7 @@ class Command(BaseCommand):
         except User.DoesNotExist:
             raise CommandError(f"No user with email {opts['email']}")
 
-        with transaction.atomic():
+        with transaction.atomic(), activity_context(source="import", reason=f"Planner import ({opts['file']})"):
             self._import_debts(user, data.get("debts", []))
             self._import_recurring(user, data.get("recurring", []))
             recalculate_avalanche_order(user)

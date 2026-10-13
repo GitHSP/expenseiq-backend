@@ -8,7 +8,12 @@ from datetime import date
 
 from django.utils import timezone
 
+from activity.context import activity_context, log_activity
+
 from .models import EmergencyFund
+
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December"]
 
 
 def toggle_checklist_item(item):
@@ -34,7 +39,11 @@ def toggle_checklist_item(item):
     debt_updated = None
     fund_updated = None
 
-    if item.is_completed and not was_completed:
+    if not (item.is_completed and not was_completed):
+        return item, debt_updated, fund_updated
+
+    # The balance changes below are logged with this as their reason.
+    with activity_context(reason=f'Ticked "{item.label}"'):
 
         if (
             item.linked_debt and
@@ -238,16 +247,18 @@ def sync_month_checklist(plan):
     return result, top_debt
 
 
-def _apply_monthly_interest(user, months):
+def _apply_monthly_interest(user, months, label=""):
     """Add `months` months of interest to every active debt (compounded monthly)."""
     from .models import Debt
     debts = list(Debt.objects.filter(user=user, is_active=True))
-    for debt in debts:
-        if months <= 0 or debt.annual_interest_rate <= 0:
-            continue
-        for _ in range(months):
-            debt.current_balance += (debt.current_balance * debt.monthly_interest_rate).quantize(Decimal("0.01"))
-        debt.save(update_fields=["current_balance", "updated_at"])
+    reason = f"Monthly interest{f' ({label})' if label else ''}" + (f" × {months} months" if months > 1 else "")
+    with activity_context(source="system", reason=reason):
+        for debt in debts:
+            if months <= 0 or debt.annual_interest_rate <= 0:
+                continue
+            for _ in range(months):
+                debt.current_balance += (debt.current_balance * debt.monthly_interest_rate).quantize(Decimal("0.01"))
+            debt.save(update_fields=["current_balance", "updated_at"])
     return debts
 
 
@@ -284,8 +295,13 @@ def get_or_create_month_plan(user, year, month):
 
         if previous:
             gap = (year * 12 + month) - (previous.year * 12 + previous.month)
-            _apply_monthly_interest(user, gap)
-        sync_month_checklist(plan)
+            _apply_monthly_interest(user, gap, f"{MONTH_NAMES[month - 1]} {year}")
+        items, _ = sync_month_checklist(plan)
+        log_activity(
+            user, "plan", "started", f"{MONTH_NAMES[month - 1]} {year}", object_id=plan.id,
+            details={"items": len(items), "rolled_over": previous is not None},
+            source="system", reason="",
+        )
 
     return plan, previous is not None
 
