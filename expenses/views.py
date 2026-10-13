@@ -7,8 +7,10 @@ from rest_framework.views       import APIView
 
 from .models      import Expense, Income
 from .serializers import ExpenseSerializer, IncomeSerializer
+from financial_planner.models   import ChecklistItem
+from financial_planner.services import toggle_checklist_item
 from .statement_import import (
-    MAX_ROWS, StatementError, build_preview, parse_statement, suggest_flip,
+    MAX_ROWS, StatementError, build_preview, match_checklist, parse_statement, suggest_flip,
 )
 
 
@@ -97,7 +99,7 @@ class StatementPreviewView(APIView):
                  "suggest_flip": f["flip"], "count": len(f["rows"])}
                 for f in files
             ],
-            "rows": build_preview(request.user, files),
+            "rows": match_checklist(request.user, build_preview(request.user, files), files),
         })
 
 
@@ -111,8 +113,8 @@ class StatementImportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        rows = request.data.get("rows")
-        if not isinstance(rows, list) or not rows:
+        rows = request.data.get("rows") or []
+        if not isinstance(rows, list) or not (rows or request.data.get("checklist_items")):
             return Response({"error": "Nothing to import."}, status=status.HTTP_400_BAD_REQUEST)
         if len(rows) > MAX_ROWS:
             return Response({"error": f"Import at most {MAX_ROWS} rows at a time."}, status=status.HTTP_400_BAD_REQUEST)
@@ -146,12 +148,25 @@ class StatementImportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        tick_ids = request.data.get("checklist_items") or []
+        if not isinstance(tick_ids, list) or not all(isinstance(i, int) for i in tick_ids):
+            return Response({"error": "checklist_items must be a list of ids."}, status=status.HTTP_400_BAD_REQUEST)
+
         with transaction.atomic():
             for serializer in serializers_to_save:
                 serializer.save(user=request.user)
+            # Same side effects as ticking in the Planner: debt payments
+            # reduce the debt's balance, savings go to the emergency fund.
+            ticked = 0
+            for item in ChecklistItem.objects.filter(
+                id__in=tick_ids, monthly_plan__user=request.user, is_completed=False,
+            ):
+                toggle_checklist_item(item)
+                ticked += 1
 
         expenses = sum(1 for s in serializers_to_save if isinstance(s, ExpenseSerializer))
         return Response({
             "imported_expenses": expenses,
             "imported_income":   len(serializers_to_save) - expenses,
+            "ticked_checklist":  ticked,
         }, status=status.HTTP_201_CREATED)

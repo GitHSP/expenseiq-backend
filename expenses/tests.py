@@ -173,7 +173,7 @@ class StatementApiTests(TestCase):
             {"kind": "income", "title": "Payroll", "amount": "1150.00", "date": "2026-10-15", "category": "Salary"},
         ]}, format="json")
         self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.data, {"imported_expenses": 1, "imported_income": 1})
+        self.assertEqual(res.data, {"imported_expenses": 1, "imported_income": 1, "ticked_checklist": 0})
         exp = Expense.objects.get()
         self.assertEqual(exp.user, self.user)
         self.assertEqual(exp.tags, ["imported"])
@@ -403,3 +403,93 @@ class PdfStatementTests(TestCase):
         self.assertFalse(res.data["files"][0]["suggest_flip"])
         self.assertTrue(rows["Payment Thank You/Paiement Merci"]["is_transfer"])
         self.assertEqual(rows["Tim Hortons Toronto On"]["expense_category"], "Food & Dining")
+
+
+class PlannerCrossCheckTests(TestCase):
+    def setUp(self):
+        from financial_planner.models import Debt, MonthlyPlan, ChecklistItem
+        self.user = get_user_model().objects.create_user(
+            email="planner-match@example.test", username="pm", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.debt = Debt.objects.create(user=self.user, name="CIBC Visa", current_balance=Decimal("3494.00"),
+                                        annual_interest_rate=Decimal("21.99"), minimum_payment=Decimal("70.00"), due_day=13)
+        plan = MonthlyPlan.objects.create(user=self.user, year=2026, month=10)
+        self.rent = ChecklistItem.objects.create(monthly_plan=plan, label="Rent", amount=650, due_day=26, category="fixed_expense")
+        self.cibc = ChecklistItem.objects.create(monthly_plan=plan, label="CIBC Visa minimum payment", amount=70,
+                                                 due_day=13, category="debt_min", linked_debt=self.debt)
+        self.rogers = ChecklistItem.objects.create(monthly_plan=plan, label="Mobile Bill", amount=30, due_day=26, category="fixed_expense")
+
+    def preview(self, *files):
+        uploads = [SimpleUploadedFile(name, content.encode()) for name, content in files]
+        res = self.client.post("/api/statements/preview/", {"files": uploads}, format="multipart")
+        self.assertEqual(res.status_code, 200)
+        return {r["title"]: r for r in res.data["rows"]}
+
+    def test_matches_by_amount_and_due_date_or_name(self):
+        bank = ("Date,Description,Amount\n"
+                "2026-10-24,E-TRANSFER TO LANDLORD,-650.00\n"     # near Rent's due day
+                "2026-10-12,ROGERS WIRELESS,-30.00\n"             # 14 days from due, no name overlap
+                "2026-10-15,GROCERIES,-650.00\n")                 # same amount as rent but already used
+        rows = self.preview(("chequing.csv", bank))
+        self.assertEqual(rows["E-Transfer To Landlord"]["checklist_match"]["id"], self.rent.id)
+        self.assertIsNone(rows["Rogers Wireless"]["checklist_match"])
+        self.assertIsNone(rows["Groceries"]["checklist_match"])
+
+    def test_card_payment_matches_debt_minimum_via_filename(self):
+        card = "Date,Description,Amount\n2026-10-02,PAYMENT THANK YOU,70.00\n2026-10-05,AMAZON.CA,-70.00\n"
+        rows = self.preview(("cibc-visa-oct.csv", card))
+        self.assertEqual(rows["Payment Thank You"]["checklist_match"]["id"], self.cibc.id)
+        self.assertIsNone(rows["Amazon.Ca"]["checklist_match"])  # item already matched once
+
+    def test_other_months_and_ticked_items_are_ignored(self):
+        self.rent.is_completed = True
+        self.rent.save()
+        bank = "Date,Description,Amount\n2026-10-25,RENT,-650.00\n2026-11-25,RENT,-650.00\n"
+        rows = self.preview(("chequing.csv", bank))
+        self.assertIsNone(rows["Rent"]["checklist_match"])
+
+    def test_import_ticks_items_and_pays_down_debt(self):
+        res = self.client.post("/api/statements/import/", {"rows": [
+            {"kind": "expense", "title": "Rent", "amount": "650", "date": "2026-10-24", "category": "Housing"},
+        ], "checklist_items": [self.rent.id, self.cibc.id]}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["ticked_checklist"], 2)
+        self.rent.refresh_from_db(); self.cibc.refresh_from_db(); self.debt.refresh_from_db()
+        self.assertTrue(self.rent.is_completed and self.cibc.is_completed)
+        self.assertEqual(self.debt.current_balance, Decimal("3424.00"))
+
+    def test_can_tick_without_importing_rows(self):
+        res = self.client.post("/api/statements/import/", {"rows": [], "checklist_items": [self.cibc.id]}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["ticked_checklist"], 1)
+
+    def test_cannot_tick_someone_elses_items(self):
+        other = APIClient()
+        other.force_authenticate(get_user_model().objects.create_user(email="o@example.test", username="o", password="x-Test-12345"))
+        res = other.post("/api/statements/import/", {"rows": [], "checklist_items": [self.rent.id]}, format="json")
+        self.assertEqual(res.data["ticked_checklist"], 0)
+        self.rent.refresh_from_db()
+        self.assertFalse(self.rent.is_completed)
+
+
+class TransferWordingTests(TestCase):
+    def test_e_transfer_to_someone_is_not_an_internal_transfer(self):
+        from .statement_import import TRANSFER_PATTERNS
+        self.assertIsNone(TRANSFER_PATTERNS.search("E-TRANSFER TO LANDLORD"))
+        self.assertIsNone(TRANSFER_PATTERNS.search("INTERAC ETRANSFER TO JOHN"))
+        self.assertIsNotNone(TRANSFER_PATTERNS.search("ONLINE TRANSFER TO SAVINGS"))
+        self.assertIsNotNone(TRANSFER_PATTERNS.search("TRANSFER TO 00123-4567"))
+
+    def test_planner_bill_match_overrides_transfer_wording(self):
+        from financial_planner.models import ChecklistItem, MonthlyPlan
+        user = get_user_model().objects.create_user(email="tw@example.test", username="tw", password="x-Test-12345")
+        plan = MonthlyPlan.objects.create(user=user, year=2026, month=10)
+        ChecklistItem.objects.create(monthly_plan=plan, label="Family transfer", amount=500, due_day=28, category="transfer")
+        client = APIClient()
+        client.force_authenticate(user)
+        res = client.post("/api/statements/preview/", {"files": [SimpleUploadedFile(
+            "chq.csv", b"Date,Description,Amount\n2026-10-27,ONLINE TRANSFER TO FAMILY,-500.00\n")]}, format="multipart")
+        row = res.data["rows"][0]
+        self.assertIsNotNone(row["checklist_match"])
+        self.assertFalse(row["is_transfer"])
