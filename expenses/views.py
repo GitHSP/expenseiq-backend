@@ -1,3 +1,5 @@
+from decimal                    import Decimal
+
 from django.db                  import transaction
 from rest_framework             import generics, status
 from rest_framework.parsers     import MultiPartParser
@@ -9,6 +11,7 @@ from .models      import Expense, Income
 from .serializers import ExpenseSerializer, IncomeSerializer
 from financial_planner.models   import ChecklistItem
 from financial_planner.services import toggle_checklist_item
+from activity.context           import activity_context, log_activity
 from .statement_import import (
     MAX_ROWS, StatementError, build_preview, match_checklist, parse_statement, suggest_flip,
 )
@@ -152,7 +155,7 @@ class StatementImportView(APIView):
         if not isinstance(tick_ids, list) or not all(isinstance(i, int) for i in tick_ids):
             return Response({"error": "checklist_items must be a list of ids."}, status=status.HTTP_400_BAD_REQUEST)
 
-        with transaction.atomic():
+        with transaction.atomic(), activity_context(source="import", quiet={"expense", "income"}):
             for serializer in serializers_to_save:
                 serializer.save(user=request.user)
             # Same side effects as ticking in the Planner: debt payments
@@ -165,6 +168,20 @@ class StatementImportView(APIView):
                 ticked += 1
 
         expenses = sum(1 for s in serializers_to_save if isinstance(s, ExpenseSerializer))
+        sources = sorted({str(r.get("source") or filename) for r in rows if isinstance(r, dict)}) or [filename]
+        totals = {"expense": Decimal("0"), "income": Decimal("0")}
+        for s in serializers_to_save:
+            totals["expense" if isinstance(s, ExpenseSerializer) else "income"] += s.validated_data["amount"]
+        log_activity(
+            request.user, "import", "imported", ", ".join(sources)[:255],
+            details={
+                "files": sources,
+                "expenses": expenses, "expense_total": str(totals["expense"]),
+                "income": len(serializers_to_save) - expenses, "income_total": str(totals["income"]),
+                "ticked": ticked,
+            },
+            source="import", reason="",
+        )
         return Response({
             "imported_expenses": expenses,
             "imported_income":   len(serializers_to_save) - expenses,

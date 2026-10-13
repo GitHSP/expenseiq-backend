@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from .models import EncryptionKey, SyncedMessage
 from .serializers import EncryptionKeySerializer, SyncedMessageSerializer
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, MUTATING_TOOLS
+from activity.context import activity_context
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,8 @@ class ChatView(APIView):
                         result = {"ok": False, "message": f"Unknown tool '{block.name}'."}
                     else:
                         try:
-                            result = handler(request.user, **(block.input or {}))
+                            with activity_context(source="assistant"):
+                                result = handler(request.user, **(block.input or {}))
                         except Exception:
                             logger.exception("Assistant tool '%s' failed", block.name)
                             result = {"ok": False, "message": "Something went wrong running that action. Please try again."}

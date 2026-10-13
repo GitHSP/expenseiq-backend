@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     # Our apps
     'authentication',
     'expenses',
+    'activity',
     'financial_planner',
     'assistant',
 ]
