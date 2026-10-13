@@ -40,10 +40,25 @@ ISO_DATE_RE = re.compile(r"\b(20\d\d)-(\d{2})-(\d{2})\b")
 
 AMOUNT_RE = re.compile(r"^\(?-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?(?:CR|DR|-)?$|^\(?-?\$?\d+\.\d{2}\)?(?:CR|DR|-)?$", re.IGNORECASE)
 
+# Statement summary wording — these figures are never transactions.
 SKIP_LINE_RE = re.compile(
     r"opening balance|closing balance|balance forward|previous balance|new balance|"
-    r"total|subtotal|sub-total|minimum payment|payment due|credit limit|available credit|"
-    r"interest rate|page \d|statement period|account number",
+    r"statement balance|total balance|balance due|amount due|past due|"
+    r"minimum payment|min\.? payment|minimum (amount )?due|payment due|"
+    r"credit limit|available credit|credit available|over ?limit|"
+    r"purchases? ?(&|and) ?(other )?charges|payments? ?(&|and) ?(other )?credits|cash advances?|"
+    r"fees? charged|interest charged|interest rate|annual interest|"
+    r"rewards? (earned|balance|summary)|points (earned|balance)|cash ?back (earned|balance)|"
+    r"estimated time|if you (make|pay) only|years? to pay|account summary|"
+    r"page \d|statement period|statement date|account number",
+    re.IGNORECASE,
+)
+
+# A line starting with one of these closes the transaction table; anything
+# after it (summaries, interest tables, messages) is ignored until the next
+# table header.
+TABLE_END_RE = re.compile(
+    r"^(total|sub-?total|closing balance|new balance|statement balance|ending balance)\b",
     re.IGNORECASE,
 )
 
@@ -142,18 +157,26 @@ def _group_lines(words, tolerance=3):
 
 
 def _find_columns(line):
-    """Map column kind -> x-centre if this line looks like a table header."""
+    """
+    If this line is a transaction-table header, return (columns, right_edge):
+    column kind -> x-centre, and the x where the table ends (anything further
+    right, like a summary box beside the table, isn't part of it).
+    """
     if any(AMOUNT_RE.match(w["text"]) for w in line):
         return None  # header rows don't contain money amounts
-    columns = {}
+    columns, right = {}, 0
     for w in line:
         for kind, pattern in HEADER_WORDS.items():
             if kind not in columns and pattern.search(w["text"]):
                 columns[kind] = (w["x0"] + w["x1"]) / 2
+                right = max(right, w["x1"])
                 break
     has_money_col = any(k in columns for k in ("out", "in", "amount"))
     has_date = any(re.search(r"date", w["text"], re.IGNORECASE) for w in line)
-    return columns if has_money_col and (has_date or len(columns) >= 2) else None
+    if not (has_money_col and (has_date or len(columns) >= 2)):
+        return None
+    # Money is right-aligned and can stick out past its header a little.
+    return columns, right + 45
 
 
 def parse_pdf(raw):
@@ -176,40 +199,58 @@ def parse_pdf(raw):
     end = _statement_end(all_text)
 
     rows = []
-    columns = None
+    columns = None        # set by a table header: column kind -> x-centre
+    table_right = None    # words further right than this are outside the table
+    in_table = False
     prev_balance = None
     last_date = None
     for words in pages:
         for line in _group_lines(words):
             header = _find_columns(line)
             if header:
-                columns = header
+                columns, table_right = header
+                in_table = True
                 continue
+
+            if columns:
+                # Drop anything beside the table (e.g. an account summary box).
+                line = [w for w in line if w["x0"] <= table_right]
+                if not line:
+                    continue
 
             text = " ".join(w["text"] for w in line)
             d, rest = _leading_date(text, end)
             if d:
                 # Skip a second (posting) date.
                 _, rest = _leading_date(rest, end)
-
             amounts = [w for w in line if AMOUNT_RE.match(w["text"])]
+
+            # Totals never start with a date; a dated "TOTAL WINE" is a purchase.
+            if not d and TABLE_END_RE.search(text):
+                if amounts and re.search(r"balance", text, re.IGNORECASE):
+                    prev_balance = _parse_money(amounts[-1]["text"])
+                in_table = False
+                continue
+            if SKIP_LINE_RE.search(rest if d else text):
+                if amounts and re.search(r"balance", text, re.IGNORECASE):
+                    prev_balance = _parse_money(amounts[-1]["text"])
+                continue
+            if columns and not in_table:
+                continue  # between tables: summaries, notices, interest tables
+
             if d:
                 last_date = d
-            elif amounts and last_date and not SKIP_LINE_RE.search(text):
+            elif amounts and last_date and in_table:
                 # Same day as the transaction above — the bank only printed
                 # the date once.
                 d, rest = last_date, text
             else:
                 # Wrapped description: no date, no amounts.
-                if rows and not amounts and rows[-1]["_open"] and not SKIP_LINE_RE.search(text):
+                if rows and not amounts and rows[-1]["_open"]:
                     rows[-1]["description"] = f'{rows[-1]["description"]} {text}'.strip()[:200]
                     rows[-1]["_open"] = False
-                if amounts and SKIP_LINE_RE.search(text) and re.search(r"balance", text, re.IGNORECASE):
-                    prev_balance = _parse_money(amounts[-1]["text"])
                 continue
-            if not amounts or SKIP_LINE_RE.search(rest):
-                if amounts and re.search(r"balance", rest, re.IGNORECASE):
-                    prev_balance = _parse_money(amounts[-1]["text"])
+            if not amounts:
                 continue
 
             description = " ".join(
