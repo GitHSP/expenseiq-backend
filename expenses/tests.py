@@ -543,3 +543,44 @@ class SameDayPdfTests(TestCase):
         self.assertEqual(_match(EXPENSE_RULES, rows[0]["description"], "Other"), "Transport")
         self.assertEqual(_match(EXPENSE_RULES, rows[1]["description"], "Other"), "Housing")
         self.assertEqual(_match(EXPENSE_RULES, rows[4]["description"], "Other"), "Food & Dining")
+
+
+# Card statement with a summary box beside the transactions and summary
+# lines after them — none of those figures are spending.
+CARD_WITH_SUMMARY_PDF = make_pdf([[
+    (40, 770, "Statement period September 15, 2026 to October 14, 2026"),
+    (40, 740, "Trans date"), (100, 740, "Post date"), (160, 740, "Description"), (330, 740, "Amount ($)"),
+    (420, 740, "Your account summary"),
+    (40, 725, "Sep 28"), (100, 725, "Sep 30"), (160, 725, "TIM HORTONS #1234"), (345, 725, "4.50"),
+    (420, 725, "Previous balance"), (530, 725, "$3,494.00"),
+    (40, 710, "Oct 02"), (100, 710, "Oct 03"), (160, 710, "PAYMENT THANK YOU"), (340, 710, "-500.00"),
+    (420, 710, "Payments & credits"), (530, 710, "-$500.00"),
+    (40, 695, "Oct 05"), (100, 695, "Oct 06"), (160, 695, "AMAZON.CA"), (343, 695, "25.99"),
+    (420, 695, "Purchases & charges"), (530, 695, "$30.49"),
+    (420, 680, "Minimum due"), (530, 680, "$70.00"),
+    (420, 665, "Statement balance"), (530, 665, "$3,024.49"),
+    (160, 640, "Total for 4500 XXXX XXXX 1234"), (343, 640, "30.49"),
+    (40, 610, "Purchases & charges"), (343, 610, "30.49"),
+    (40, 595, "Amount due"), (343, 595, "70.00"),
+    (40, 580, "If you make only the minimum payment each month, it will take 12 years"), (343, 580, "9,876.00"),
+]])
+
+
+class PdfSummaryLinesTests(TestCase):
+    def test_summary_figures_are_not_transactions(self):
+        rows, _ = parse_statement("visa.pdf", CARD_WITH_SUMMARY_PDF)
+        self.assertEqual([(r["date"], r["amount"], r["description"]) for r in rows], [
+            (date(2026, 9, 28), Decimal("-4.50"), "TIM HORTONS #1234"),
+            (date(2026, 10, 2), Decimal("500.00"), "PAYMENT THANK YOU"),
+            (date(2026, 10, 5), Decimal("-25.99"), "AMAZON.CA"),
+        ])
+
+    def test_merchant_named_total_is_kept(self):
+        pdf = make_pdf([[
+            (40, 745, "Statement period September 15, 2026 to October 14, 2026"),
+            (40, 700, "Trans date"), (160, 700, "Description"), (330, 700, "Amount"),
+            (40, 685, "Oct 03"), (160, 685, "TOTAL WINE & MORE"), (343, 685, "45.00"),
+            (40, 670, "Oct 04"), (160, 670, "PRESTO"), (345, 670, "3.35"),
+        ]])
+        rows, _ = parse_statement("visa.pdf", pdf)
+        self.assertEqual([r["description"] for r in rows], ["TOTAL WINE & MORE", "PRESTO"])
