@@ -8,6 +8,7 @@
 
 import json
 import logging
+import re
 from datetime import date
 
 import anthropic
@@ -37,10 +38,21 @@ Guidelines:
 - Things that repeat every month (rent, bills, transfers, salary) are recurring payments; anything with a balance being paid down (credit cards, loans, EMIs) is a debt; a checklist item is a one-off for the current month only.
 - Call get_financial_summary when you need context to answer a question (e.g. "how much debt do I have left?", "am I on track?").
 - After taking an action, confirm briefly in plain language what you did — don't dump raw JSON or field names at the user.
+- Honesty is essential: only say you changed something (added, deleted, updated, ticked, paid...) if a tool call in this reply returned ok for exactly that change. If there's no tool for what the user asks, or a tool fails, say so plainly and tell them how to do it in the app. Never invent results, errors, or reasons (like "sync issues").
+- To delete many entries at once use delete_transactions: preview first, tell the user the exact numbers, and only delete after they confirm in their next message. The Expenses page also has a "Delete all" button for a month.
 - Be concise and warm, like a competent assistant who respects the user's time.
 """
 
 MAX_TOOL_ROUNDS = 6
+
+# Backstop for the honesty rule: a reply that says it changed something
+# when no tool actually changed anything gets a visible note.
+CLAIMS_CHANGE = re.compile(
+    r"^\s*done\b|\b(i'?ve|i have|i)\s+(just\s+)?(deleted|removed|cleared|added|logged|recorded|updated|changed|"
+    r"marked|ticked|paid|set|created|moved)\b|\bhas been (deleted|removed|cleared|added|updated)\b|"
+    r"\bhave been (deleted|removed|cleared|added|updated)\b",
+    re.IGNORECASE,
+)
 
 
 class ChatView(APIView):
@@ -75,6 +87,11 @@ class ChatView(APIView):
         if not messages:
             return Response({"error": "messages must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
 
+        last_user_message = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m["content"], str)), ""
+        )
+        tool_ctx = {"last_user_message": last_user_message, "previewed": set()}
+
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         system_prompt = SYSTEM_PROMPT.format(today=date.today().isoformat())
         actions = []
@@ -95,6 +112,8 @@ class ChatView(APIView):
                     reply_text = "".join(
                         block.text for block in response.content if block.type == "text"
                     ).strip()
+                    if not actions and CLAIMS_CHANGE.search(reply_text):
+                        reply_text += "\n\n(Note: no changes were actually made to your data in this reply.)"
                     return Response({"reply": reply_text, "actions": actions})
 
                 tool_results = []
@@ -108,12 +127,12 @@ class ChatView(APIView):
                     else:
                         try:
                             with activity_context(source="assistant"):
-                                result = handler(request.user, **(block.input or {}))
+                                result = handler(request.user, **(block.input or {}), _ctx=tool_ctx)
                         except Exception:
                             logger.exception("Assistant tool '%s' failed", block.name)
                             result = {"ok": False, "message": "Something went wrong running that action. Please try again."}
 
-                    if block.name in MUTATING_TOOLS and result.get("ok"):
+                    if block.name in MUTATING_TOOLS and result.get("ok") and not result.get("needs_confirmation"):
                         actions.append({
                             "tool": block.name,
                             "input": block.input,

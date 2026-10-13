@@ -10,6 +10,7 @@
 # title/label. Zero or multiple matches return a plain-language message
 # instead of guessing, so Claude can ask the user to be more specific.
 
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -229,6 +230,70 @@ def delete_expense(user, title, **kwargs):
     expense.delete()
     return {"ok": True, "message": f"Deleted expense '{label}'."}
 
+
+
+CONFIRM_WORDS = re.compile(r"\b(yes|yep|yeah|confirm(ed)?|go ahead|do it|ok(ay)?|sure|proceed)\b", re.IGNORECASE)
+
+
+def delete_transactions(user, date_from, date_to, kind="both", category=None,
+                        confirm=False, expected_count=None, _ctx=None, **kwargs):
+    """
+    Two-step bulk delete. Without confirm it only reports what would be
+    deleted. With confirm=True it deletes — but only when the user's latest
+    message actually confirms, the preview wasn't made in this same reply,
+    and the count still matches what the user was shown.
+    """
+    from expenses.bulk import bulk_delete, summarise
+
+    start, end = _parse_date(date_from), _parse_date(date_to)
+    if start > end:
+        return {"ok": False, "message": "date_from must be on or before date_to."}
+    kinds = ["expense", "income"] if kind == "both" else [kind]
+    if any(k not in ("expense", "income") for k in kinds):
+        return {"ok": False, "message": "kind must be expense, income or both."}
+
+    querysets = {}
+    for k in kinds:
+        model = Expense if k == "expense" else Income
+        qs = model.objects.filter(user=user, date__range=(start, end))
+        if category:
+            qs = qs.filter(category__icontains=category)
+        querysets[k] = qs
+    summary = {k: summarise(qs) for k, qs in querysets.items()}
+    total_count = sum(c for c, _ in summary.values())
+    described = ", ".join(
+        f"{c} {'expense' if k == 'expense' else 'income'} entr{'y' if c == 1 else 'ies'} totalling ${t}"
+        for k, (c, t) in summary.items()
+    )
+    ctx = _ctx or {}
+
+    if not confirm:
+        ctx.setdefault("previewed", set()).add("delete_transactions")
+        return {
+            "ok": True,
+            "needs_confirmation": True,
+            "count": total_count,
+            "message": (
+                f"Nothing deleted yet. Between {start} and {end} there are {described}. "
+                "Tell the user exactly this and ask them to confirm; only call again with "
+                f"confirm=true and expected_count={total_count} after they say yes."
+            ) if total_count else f"There's nothing to delete between {start} and {end}.",
+        }
+
+    if "delete_transactions" in ctx.get("previewed", set()):
+        return {"ok": False, "message": "Not deleted: show the user the preview and wait for them to confirm in their next message."}
+    if not CONFIRM_WORDS.search(ctx.get("last_user_message", "")):
+        return {"ok": False, "message": "Not deleted: the user hasn't confirmed. Ask them to confirm first."}
+    if expected_count is None or int(expected_count) != total_count:
+        return {"ok": False, "message": f"Not deleted: there are now {total_count} matching entries, not {expected_count}. Show the user the new numbers and ask again."}
+
+    label = f"{start} to {end}"
+    done = {k: bulk_delete(user, k, qs, label) for k, qs in querysets.items()}
+    deleted = ", ".join(
+        f"{c} {'expense' if k == 'expense' else 'income'} entr{'y' if c == 1 else 'ies'} (${t})"
+        for k, (c, t) in done.items()
+    )
+    return {"ok": True, "deleted": sum(c for c, _ in done.values()), "message": f"Deleted {deleted} dated {start} to {end}."}
 
 def add_income(user, title, amount, category=None, date=None, notes="", **kwargs):
     try:
@@ -530,6 +595,7 @@ TOOL_HANDLERS = {
     "add_expense": add_expense,
     "update_expense": update_expense,
     "delete_expense": delete_expense,
+    "delete_transactions": delete_transactions,
     "add_income": add_income,
     "add_debt": add_debt,
     "update_debt": update_debt,
@@ -549,7 +615,7 @@ TOOL_HANDLERS = {
 # Tools whose successful result should be surfaced to the frontend as an
 # "action" (so the UI can show a toast / refresh the relevant screen).
 MUTATING_TOOLS = {
-    "add_expense", "update_expense", "delete_expense",
+    "add_expense", "update_expense", "delete_expense", "delete_transactions",
     "add_income",
     "add_debt", "update_debt", "delete_debt",
     "update_emergency_fund",
@@ -645,6 +711,28 @@ TOOL_SCHEMAS = [
                 "title": {"type": "string", "description": "Title (or part of it) to find the expense."},
             },
             "required": ["title"],
+        },
+    },
+    {
+        "name": "delete_transactions",
+        "description": (
+            "Delete MANY expenses and/or income entries in a date range (e.g. 'delete all my September "
+            "expenses'). Always call first WITHOUT confirm to get the exact counts and totals, tell the "
+            "user those numbers and ask them to confirm. Only after the user replies yes, call again with "
+            "confirm=true and expected_count from the preview. Never claim anything was deleted unless the "
+            "confirmed call returns ok."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "ISO date (YYYY-MM-DD), inclusive."},
+                "date_to": {"type": "string", "description": "ISO date (YYYY-MM-DD), inclusive."},
+                "kind": {"type": "string", "enum": ["expense", "income", "both"], "description": "Default both."},
+                "category": {"type": "string", "description": "Optional category filter (partial match)."},
+                "confirm": {"type": "boolean", "description": "true only after the user has confirmed the preview."},
+                "expected_count": {"type": "integer", "description": "The count from the preview the user confirmed."},
+            },
+            "required": ["date_from", "date_to"],
         },
     },
     {
