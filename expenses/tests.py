@@ -493,3 +493,53 @@ class TransferWordingTests(TestCase):
         row = res.data["rows"][0]
         self.assertIsNotNone(row["checklist_match"])
         self.assertFalse(row["is_transfer"])
+
+
+# Chequing statement where only the first transaction of each day shows
+# its date and each description spans two lines (type, then merchant).
+SAME_DAY_PDF = make_pdf([[
+    (40, 760, "Account statement  September 1, 2026 to September 30, 2026"),
+    (40, 720, "Date"), (120, 720, "Description"), (330, 720, "Withdrawals ($)"), (440, 720, "Deposits ($)"), (520, 720, "Balance ($)"),
+    (40, 705, "Sep 1"), (120, 705, "Opening balance"), (520, 705, "$2,552.58"),
+    (40, 690, "Sep 1"), (120, 690, "VISA DEBIT RETAIL  PURCHASE"), (360, 690, "30.00"), (525, 690, "2,522.58"),
+    (120, 678, "PRESTO MOBI/SKC   624411249965"),
+    (120, 663, "PREAUTHORIZED DEBIT"), (350, 663, "2,550.00"), (530, 663, "-27.42"),
+    (120, 651, "Realstar Corp"),
+    (40, 636, "Sep 3"), (120, 636, "E-TRANSFER        011693914016"), (455, 636, "350.00"), (525, 636, "322.58"),
+    (120, 624, "Alex Sample"),
+    (120, 609, "E-TRANSFER        106101762546"), (360, 609, "350.00"), (530, 609, "-27.42"),
+    (120, 597, "Sam Example"),
+    (120, 582, "VISA DEBIT RETAIL  PURCHASE"), (365, 582, "1.92"), (530, 582, "-29.34"),
+    (120, 570, "TIM HORTONS #24   624637090333"),
+    (40, 555, "Sep 4"), (120, 555, "E-TRANSFER        011695311404"), (445, 555, "1,372.97"), (520, 555, "1,343.63"),
+    (120, 543, "Payroll Co"),
+    (40, 520, "Sep 30"), (120, 520, "Closing balance"), (520, 520, "$1,343.63"),
+]])
+
+
+class SameDayPdfTests(TestCase):
+    def test_transactions_without_their_own_date_are_kept(self):
+        rows, _ = parse_statement("chequing.pdf", SAME_DAY_PDF)
+        self.assertEqual([(r["date"], r["amount"]) for r in rows], [
+            (date(2026, 9, 1), Decimal("-30.00")),
+            (date(2026, 9, 1), Decimal("-2550.00")),
+            (date(2026, 9, 3), Decimal("350.00")),
+            (date(2026, 9, 3), Decimal("-350.00")),
+            (date(2026, 9, 3), Decimal("-1.92")),
+            (date(2026, 9, 4), Decimal("1372.97")),
+        ])
+
+    def test_titles_lead_with_the_merchant(self):
+        rows, _ = parse_statement("chequing.pdf", SAME_DAY_PDF)
+        titles = [clean_title(r["description"]) for r in rows]
+        self.assertEqual(titles, [
+            "Presto Mobi/Skc", "Realstar Corp", "E-Transfer Alex Sample",
+            "E-Transfer Sam Example", "Tim Hortons", "E-Transfer Payroll Co",
+        ])
+
+    def test_categories(self):
+        from .statement_import import EXPENSE_RULES, _match
+        rows, _ = parse_statement("chequing.pdf", SAME_DAY_PDF)
+        self.assertEqual(_match(EXPENSE_RULES, rows[0]["description"], "Other"), "Transport")
+        self.assertEqual(_match(EXPENSE_RULES, rows[1]["description"], "Other"), "Housing")
+        self.assertEqual(_match(EXPENSE_RULES, rows[4]["description"], "Other"), "Food & Dining")

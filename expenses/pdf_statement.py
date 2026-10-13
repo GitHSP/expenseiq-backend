@@ -9,6 +9,8 @@
 #     (withdrawals / deposits / amount / balance) comes from the column
 #     headers' positions on the page
 #   - without usable headers, a running balance tells money in from out
+#   - many banks print the date only on a day's first transaction, so a
+#     line with amounts but no date (inside the table) reuses the last date
 #   - lines without a date or amount continue the previous description
 # Statements usually omit the year, so it's taken from the latest full date
 # printed on the statement (the period end).
@@ -176,6 +178,7 @@ def parse_pdf(raw):
     rows = []
     columns = None
     prev_balance = None
+    last_date = None
     for words in pages:
         for line in _group_lines(words):
             header = _find_columns(line)
@@ -190,7 +193,13 @@ def parse_pdf(raw):
                 _, rest = _leading_date(rest, end)
 
             amounts = [w for w in line if AMOUNT_RE.match(w["text"])]
-            if not d:
+            if d:
+                last_date = d
+            elif amounts and last_date and not SKIP_LINE_RE.search(text):
+                # Same day as the transaction above — the bank only printed
+                # the date once.
+                d, rest = last_date, text
+            else:
                 # Wrapped description: no date, no amounts.
                 if rows and not amounts and rows[-1]["_open"] and not SKIP_LINE_RE.search(text):
                     rows[-1]["description"] = f'{rows[-1]["description"]} {text}'.strip()[:200]
@@ -211,6 +220,10 @@ def parse_pdf(raw):
 
             amount = _line_amount(amounts, columns, prev_balance)
             balance = _balance_of(amounts, columns)
+            if amount is not None and balance is not None and prev_balance is not None:
+                change = balance - prev_balance
+                if abs(abs(change) - abs(amount)) < Decimal("0.01"):
+                    amount = change
             if balance is not None:
                 prev_balance = balance
             if amount is None or amount == 0:
