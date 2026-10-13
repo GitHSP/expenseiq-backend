@@ -292,7 +292,7 @@ def parse_statement(filename, raw):
 
 TRANSFER_PATTERNS = re.compile(
     r"payment.{0,10}thank you|paiement.{0,10}merci|payment received|"
-    r"^tfr\b|\btransfer (to|from)\b|online transfer|internet transfer|"
+    r"^tfr\b|(?<!e-)(?<!e)\btransfer (to|from)\b|online transfer|internet transfer|"
     r"credit card payment|mb-credit card|"
     r"(payment|pmt|pymt).{0,20}(visa|mastercard|mbna|amex)|"
     r"(visa|mastercard|mbna|amex).{0,20}(payment|pmt|pymt)",
@@ -483,3 +483,83 @@ def suggest_flip(rows, info):
         return False
     positives = sum(1 for r in rows if r["amount"] > 0)
     return positives / len(rows) > 0.7
+
+
+# ─────────────────────────────────────────────
+# Cross-checking against the Financial Planner checklist
+# ─────────────────────────────────────────────
+
+PLANNER_STOPWORDS = {
+    "payment", "payments", "minimum", "min", "pmt", "pymt", "the", "and", "for",
+    "from", "with", "online", "bill", "pay", "extra", "avalanche", "surplus",
+    "all", "regular", "account", "main", "day", "first", "transfer", "monthly",
+    "csv", "pdf", "qfx", "ofx", "statement", "visa", "mastercard",
+}
+PLANNER_DUE_WINDOW = 5
+DEBT_CATEGORIES = ("debt_min", "debt_extra")
+
+
+def _words(text):
+    return {w for w in re.findall(r"[a-z][a-z0-9&']{2,}", str(text).lower()) if w not in PLANNER_STOPWORDS}
+
+
+def match_checklist(user, preview, files):
+    """
+    Suggest which unticked Financial Planner checklist items each statement
+    row pays, so importing can tick them off. A match needs the same amount
+    plus either overlapping names (the statement's file name counts, so a
+    "PAYMENT THANK YOU" in cibc-visa.pdf can match "CIBC Visa minimum") or a
+    date within a few days of the item's due day. Each item matches once.
+    Sets row["checklist_match"] = {"id", "label", "month"} or None.
+    """
+    from financial_planner.models import ChecklistItem
+
+    months = {(int(r["date"][:4]), int(r["date"][5:7])) for r in preview}
+    by_month = {}
+    items = (
+        ChecklistItem.objects
+        .filter(monthly_plan__user=user, is_completed=False, amount__gt=0)
+        .select_related("monthly_plan", "linked_debt")
+    )
+    for item in items:
+        key = (item.monthly_plan.year, item.monthly_plan.month)
+        if key in months:
+            by_month.setdefault(key, []).append(item)
+
+    used = set()
+    for row in preview:
+        row["checklist_match"] = None
+        d = date.fromisoformat(row["date"])
+        amount = Decimal(row["amount"])
+        money_out = (Decimal(row["signed_amount"]) < 0) != files[row["file"]]["flip"]
+        row_words = _words(f'{row["raw_description"]} {row["title"]} {files[row["file"]]["filename"]}')
+
+        best, best_score = None, 0
+        for item in by_month.get((d.year, d.month), []):
+            if item.id in used or abs(item.amount - amount) > Decimal("0.01"):
+                continue
+            # Debt payments show up as money out at the bank and money in on
+            # the card itself — either side is proof of payment.
+            if item.category not in DEBT_CATEGORIES and money_out == (item.category == "income"):
+                continue
+            item_words = _words(item.label)
+            if item.linked_debt:
+                item_words |= _words(item.linked_debt.name)
+            overlap = len(row_words & item_words)
+            near_due = item.due_day is not None and abs(d.day - item.due_day) <= PLANNER_DUE_WINDOW
+            score = overlap * 2 + (1 if near_due else 0)
+            if (overlap or near_due) and score > best_score:
+                best, best_score = item, score
+
+        if best:
+            used.add(best.id)
+            # Paying a planned bill (rent, insurance, family transfer...) is
+            # real spending even if the bank words it like a transfer.
+            if best.category not in DEBT_CATEGORIES and best.category != "savings":
+                row["is_transfer"] = False
+            row["checklist_match"] = {
+                "id":    best.id,
+                "label": best.label,
+                "month": f"{best.monthly_plan.year}-{best.monthly_plan.month:02d}",
+            }
+    return preview
