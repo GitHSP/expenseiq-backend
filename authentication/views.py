@@ -144,7 +144,7 @@ class ForgotPasswordView(APIView):
             reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
             # Send email
             send_mail(
-                subject        = 'ExpenseIQ — Reset your password',
+                subject        = 'Glacier — Reset your password',
                 message        = f'Click this link to reset your password:\n\n{reset_link}\n\nThis link expires in 24 hours.',
                 from_email     = settings.DEFAULT_FROM_EMAIL,
                 recipient_list = [email],
