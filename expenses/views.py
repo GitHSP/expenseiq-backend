@@ -9,6 +9,7 @@ from rest_framework.views       import APIView
 
 from .models      import Expense, Income
 from .serializers import ExpenseSerializer, IncomeSerializer
+from .bulk        import MODELS as BULK_MODELS, bulk_delete
 from financial_planner.models   import ChecklistItem
 from financial_planner.services import toggle_checklist_item
 from activity.context           import activity_context, log_activity
@@ -187,3 +188,28 @@ class StatementImportView(APIView):
             "imported_income":   len(serializers_to_save) - expenses,
             "ticked_checklist":  ticked,
         }, status=status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────
+# BULK DELETE
+# ─────────────────────────────────────────────
+
+class BulkDeleteView(APIView):
+    """
+    POST /api/expenses/bulk-delete/  or  /api/income/bulk-delete/
+    {"ids": [1, 2, 3], "label": "September 2026"}
+    Only the caller's own entries are deleted; unknown ids are ignored.
+    """
+    permission_classes = [IsAuthenticated]
+    kind = "expense"
+
+    def post(self, request):
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+            return Response({"error": "ids must be a non-empty list of numbers."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(ids) > 2000:
+            return Response({"error": "Delete at most 2000 at a time."}, status=status.HTTP_400_BAD_REQUEST)
+        model = BULK_MODELS[self.kind]
+        qs = model.objects.filter(user=request.user, id__in=ids)
+        count, total = bulk_delete(request.user, self.kind, qs, str(request.data.get("label") or "")[:60])
+        return Response({"deleted": count, "total": str(total)})
