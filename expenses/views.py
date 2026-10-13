@@ -56,7 +56,7 @@ class IncomeDetailView(generics.RetrieveUpdateDestroyAPIView):
 #   commit  — save the rows the user confirmed
 # ─────────────────────────────────────────────
 
-MAX_STATEMENT_BYTES = 2 * 1024 * 1024
+MAX_STATEMENT_BYTES = 5 * 1024 * 1024
 MAX_STATEMENT_FILES = 10
 
 
@@ -79,7 +79,7 @@ class StatementPreviewView(APIView):
         files, total_rows = [], 0
         for upload in uploads:
             if upload.size > MAX_STATEMENT_BYTES:
-                return Response({"error": f"{upload.name} is too large (2 MB max per file)."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": f"{upload.name} is too large (5 MB max per file)."}, status=status.HTTP_400_BAD_REQUEST)
             try:
                 rows, info = parse_statement(upload.name, upload.read())
             except StatementError as e:
