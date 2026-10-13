@@ -275,3 +275,131 @@ class TransferMatchingTests(TestCase):
     def test_too_many_files(self):
         res = self.preview(*[(f"{i}.csv", SCOTIA_CSV) for i in range(11)])
         self.assertEqual(res.status_code, 400)
+
+
+# ─────────────────────────────────────────────
+# PDF statements
+# ─────────────────────────────────────────────
+
+def make_pdf(pages):
+    """Build a minimal text PDF. `pages` is a list of pages, each a list of
+    (x, y, text) placed in 9pt Helvetica on a US-letter page."""
+    def esc(t):
+        return t.replace("\\", "\\\\").replace("(", r"\(").replace(")", r"\)")
+
+    objects = []  # bodies; object n is objects[n-1]
+    page_ids = []
+    objects.append(None)                                   # 1 catalog
+    objects.append(None)                                   # 2 pages
+    objects.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")  # 3 font
+    for items in pages:
+        stream = "".join(f"BT /F1 9 Tf {x} {y} Td ({esc(t)}) Tj ET\n" for x, y, t in items)
+        objects.append(f"<< /Length {len(stream.encode('latin-1'))} >>\nstream\n{stream}endstream")
+        content_id = len(objects)
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                       f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>")
+        page_ids.append(len(objects))
+    objects[0] = "<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(f'{i} 0 R' for i in page_ids)}] /Count {len(page_ids)} >>"
+
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for n, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{n} 0 obj\n{body}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets).encode()
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+def rows_of(pdf_bytes):
+    rows, info = parse_statement("statement.pdf", pdf_bytes)
+    return [(r["date"], r["amount"], r["description"]) for r in rows], info
+
+
+CARD_PDF = make_pdf([[
+    (50, 760, "CIBC Dividend Visa"),
+    (50, 745, "Statement period September 15, 2026 to October 14, 2026"),
+    (50, 700, "Trans date"), (110, 700, "Post date"), (170, 700, "Description"), (480, 700, "Amount($)"),
+    (50, 685, "Sep 28"), (110, 685, "Sep 30"), (170, 685, "TIM HORTONS #1234 TORONTO ON"), (490, 685, "4.50"),
+    (50, 670, "Oct 02"), (110, 670, "Oct 03"), (170, 670, "PAYMENT THANK YOU/PAIEMENT MERCI"), (490, 670, "-500.00"),
+    (50, 655, "Oct 05"), (110, 655, "Oct 06"), (170, 655, "AMAZON.CA"), (490, 655, "25.99"),
+    (170, 643, "AMZN.COM/BILL ON"),
+    (50, 620, "Total for 4500 XXXX XXXX 1234"), (490, 620, "30.49"),
+]])
+
+BANK_PDF = make_pdf([[
+    (50, 760, "RBC Royal Bank - Your account statement"),
+    (50, 745, "From October 1, 2026 to October 31, 2026"),
+    (50, 700, "Date"), (110, 700, "Description"), (330, 700, "Withdrawals ($)"), (420, 700, "Deposits ($)"), (510, 700, "Balance ($)"),
+    (50, 685, "01 Oct"), (110, 685, "Opening Balance"), (515, 685, "1,000.00"),
+    (50, 670, "03 Oct"), (110, 670, "Tim Hortons"), (340, 670, "4.50"), (515, 670, "995.50"),
+    (50, 655, "15 Oct"), (110, 655, "Payroll Deposit WVRST"), (425, 655, "1,150.00"), (515, 655, "2,145.50"),
+    (50, 640, "16 Oct"), (110, 640, "Online Transfer to Savings"), (340, 640, "200.00"), (515, 640, "1,945.50"),
+    (50, 625, "31 Oct"), (110, 625, "Closing Balance"), (515, 625, "1,945.50"),
+]])
+
+
+class PdfStatementTests(TestCase):
+    def test_credit_card_pdf(self):
+        rows, info = rows_of(CARD_PDF)
+        self.assertEqual(info["format"], "pdf")
+        self.assertEqual([(d, a) for d, a, _ in rows], [
+            (date(2026, 9, 28), Decimal("-4.50")),     # purchase = money out
+            (date(2026, 10, 2), Decimal("500.00")),    # payment = money in
+            (date(2026, 10, 5), Decimal("-25.99")),
+        ])
+        self.assertEqual(rows[0][2], "TIM HORTONS #1234 TORONTO ON")
+        self.assertEqual(rows[2][2], "AMAZON.CA AMZN.COM/BILL ON")  # wrapped line joined
+
+    def test_bank_account_pdf_uses_columns(self):
+        rows, _ = rows_of(BANK_PDF)
+        self.assertEqual([(d, a) for d, a, _ in rows], [
+            (date(2026, 10, 3), Decimal("-4.50")),
+            (date(2026, 10, 15), Decimal("1150.00")),
+            (date(2026, 10, 16), Decimal("-200.00")),
+        ])
+
+    def test_december_charge_on_january_statement(self):
+        pdf = make_pdf([[
+            (50, 745, "Statement period December 15, 2026 to January 14, 2027"),
+            (50, 700, "Trans date"), (170, 700, "Description"), (480, 700, "Amount"),
+            (50, 685, "Dec 28"), (170, 685, "CINEPLEX"), (490, 685, "18.00"),
+            (50, 670, "Jan 03"), (170, 670, "PRESTO"), (490, 670, "3.35"),
+        ]])
+        rows, _ = rows_of(pdf)
+        self.assertEqual([d for d, _, _ in rows], [date(2026, 12, 28), date(2027, 1, 3)])
+
+    def test_headerless_pdf_uses_running_balance(self):
+        pdf = make_pdf([[
+            (50, 745, "Statement date October 31, 2026"),
+            (50, 685, "Oct 01"), (110, 685, "Opening balance"), (510, 685, "1,000.00"),
+            (50, 670, "Oct 03"), (110, 670, "COFFEE"), (420, 670, "4.50"), (510, 670, "995.50"),
+            (50, 655, "Oct 05"), (110, 655, "E-TRANSFER"), (420, 655, "100.00"), (510, 655, "1,095.50"),
+        ]])
+        rows, _ = rows_of(pdf)
+        self.assertEqual([a for _, a, _ in rows], [Decimal("-4.50"), Decimal("100.00")])
+
+    def test_pdf_without_text(self):
+        with self.assertRaisesRegex(StatementError, "scanned"):
+            parse_statement("scan.pdf", make_pdf([[]]))
+
+    def test_not_really_a_pdf(self):
+        with self.assertRaises(StatementError):
+            parse_statement("fake.pdf", b"%PDF-1.4 garbage")
+
+    def test_pdf_upload_through_api(self):
+        user = get_user_model().objects.create_user(email="pdf@example.test", username="pdf", password="x-Test-12345")
+        client = APIClient()
+        client.force_authenticate(user)
+        res = client.post("/api/statements/preview/",
+                          {"files": [SimpleUploadedFile("cibc-visa.pdf", CARD_PDF, content_type="application/pdf")]},
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        rows = {r["title"]: r for r in res.data["rows"]}
+        self.assertEqual(res.data["files"][0]["format"], "pdf")
+        self.assertFalse(res.data["files"][0]["suggest_flip"])
+        self.assertTrue(rows["Payment Thank You/Paiement Merci"]["is_transfer"])
+        self.assertEqual(rows["Tim Hortons Toronto On"]["expense_category"], "Food & Dining")

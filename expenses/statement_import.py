@@ -260,14 +260,24 @@ def parse_csv(text):
 
 
 def parse_statement(filename, raw):
-    text = _decode(raw)
     name = (filename or "").lower()
+    if raw[:5] == b"%PDF-" or name.endswith(".pdf"):
+        from .pdf_statement import PdfStatementError, parse_pdf
+        try:
+            rows = parse_pdf(raw)
+        except PdfStatementError as e:
+            raise StatementError(str(e))
+        if len(rows) > MAX_ROWS:
+            raise StatementError(f"That file has {len(rows)} transactions — please import at most {MAX_ROWS} at a time.")
+        return rows, {"format": "pdf", "signed_amount": True}
+
+    text = _decode(raw)
     if name.endswith((".ofx", ".qfx")) or "<OFX>" in text[:5000].upper():
         rows, info = parse_ofx(text)
     elif name.endswith((".csv", ".txt")) or "," in text[:2000]:
         rows, info = parse_csv(text)
     else:
-        raise StatementError("Please upload a CSV, OFX or QFX file.")
+        raise StatementError("Please upload a PDF, CSV, OFX or QFX file.")
 
     if not rows:
         raise StatementError("No transactions found in the file.")
