@@ -92,14 +92,27 @@ def _best_date_format(values):
     return best if best_count else None
 
 
+# Transaction-type wording banks put before the merchant name.
+GENERIC_PREFIX = re.compile(
+    r"^(visa debit (retail )?purchase|visa debit|interac (retail )?purchase|retail purchase|"
+    r"point of sale( purchase)?|pos (purchase|retail)|pre-?authori[sz]ed (debit|payment)|"
+    r"bill payment|electronic funds transfer|eft (debit|credit)|debit memo|credit memo|"
+    r"misc(ellaneous)? payment|internet banking|online banking)\b\s*",
+    re.IGNORECASE,
+)
+
+
 def clean_title(text):
-    """'TIM HORTONS #1234  TORONTO ON' -> 'Tim Hortons Toronto On'."""
+    """'VISA DEBIT RETAIL PURCHASE TIM HORTONS #24 624637090333' -> 'Tim Hortons'."""
     t = re.sub(r"\s+", " ", str(text or "")).strip()
+    stripped = GENERIC_PREFIX.sub("", t)
+    if len(stripped) >= 3:
+        t = stripped
     t = re.sub(r"#\s*\d+", "", t)                 # store numbers
     t = re.sub(r"\b[\dX*]{6,}\b", "", t)          # card/reference numbers
     t = re.sub(r"\s+", " ", t).strip(" -*")
-    if t and t == t.upper():
-        t = t.title()
+    # Title-case words the bank shouted, leave the rest ('Realstar Corp').
+    t = " ".join(w.title() if len(w) > 1 and w == w.upper() and re.search(r"[A-Z]", w) else w for w in t.split())
     return t[:120] or "Imported transaction"
 
 
@@ -305,7 +318,9 @@ EXPENSE_RULES = [
     ("Transport",              r"\buber\b(?!\s?eats)|lyft|presto|\bttc\b|go transit|translink|compass card|oc transpo|\bstm\b|via rail|petro|esso|shell|chevron|husky|pioneer|ultramar|\bgas\b|parking|impark|green ?p|indigo park|mto|serviceontario"),
     ("Bills & Utilities",      r"rogers|\bbell\b|telus|fido|koodo|virgin (plus|mobile)|freedom mobile|chatr|public mobile|lucky mobile|hydro|enbridge|fortis|alectra|utilit|internet|monthly fee|service charge|account fee|nsf fee|overdraft"),
     ("Insurance",              r"insurance|intact|manulife|sun life|belair|aviva|desjardins ins|wawanesa|sonnet|square one"),
-    ("Housing",                r"\brent\b|landlord|property management|mortgage|condo fee"),
+    ("Housing",                r"\brent\b|landlord|property management|mortgage|condo fee|realstar|capreit|minto|greenwin|killam|"
+                               r"boardwalk|mainstreet|timbercreek|homestead|sterling karamar|medallion|hazelview|starlight|metcap|"
+                               r"osgoode|bentall|skyline living|residences"),
     ("Gym & Fitness",          r"goodlife|fit4less|planet fitness|la fitness|anytime fitness|orangetheory|\bgym\b|ymca|crossfit"),
     ("Health",                 r"pharma|shoppers drug|rexall|london drugs|jean coutu|drug mart"),
     ("Medical & Health",       r"clinic|dental|dentist|physio|optometr|medical|hospital|chiro|massage therap"),
