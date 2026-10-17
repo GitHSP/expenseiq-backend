@@ -12,6 +12,10 @@ from django.utils.encoding      import force_bytes
 from django.utils.http          import urlsafe_base64_encode, urlsafe_base64_decode
 from django.core.mail           import send_mail
 from django.conf                import settings
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.cache          import cache
+from django.core.exceptions     import ValidationError as DjangoValidationError
 
 from .serializers import RegisterSerializer, UserSerializer
 
@@ -40,6 +44,24 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+# Failed logins per account before it's locked for a while. Counted per
+# email (not per address), so spreading guesses across IPs doesn't help.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+
+
+def _lockout_key(email):
+    return f"login-failures:{email.strip().lower()}"
+
+
+def revoke_refresh_tokens(user):
+    """Sign the user out everywhere: blacklist every refresh token issued to
+    them. Access tokens are short-lived, so sessions end within minutes."""
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
+
+
 class LoginView(APIView):
     """
     POST /api/auth/login/
@@ -50,8 +72,8 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email    = request.data.get('email')
-        password = request.data.get('password')
+        email    = (request.data.get('email') or '').strip()
+        password = request.data.get('password') or ''
 
         # Validate inputs
         if not email or not password:
@@ -60,17 +82,21 @@ class LoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Find user by email
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        key = _lockout_key(email)
+        if cache.get(key, 0) >= LOGIN_MAX_FAILURES:
             return Response(
-                {'error': 'Invalid email or password'},
-                status=status.HTTP_401_UNAUTHORIZED
+                {'error': 'Too many failed attempts. Try again in 15 minutes, or reset your password.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
-        # Check password
-        if not user.check_password(password):
+        user = User.objects.filter(email__iexact=email).order_by('id').first()
+        if user is None:
+            # Spend the same time hashing as a real check, so response times
+            # don't reveal which emails have accounts.
+            make_password(password)
+        if user is None or not user.check_password(password):
+            cache.add(key, 0, LOGIN_LOCKOUT_SECONDS)
+            cache.incr(key)
             return Response(
                 {'error': 'Invalid email or password'},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -83,6 +109,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
+        cache.delete(key)
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
         return Response({
@@ -136,7 +163,7 @@ class ForgotPasswordView(APIView):
     def post(self, request):
         email = request.data.get('email')
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(email__iexact=(email or '').strip())
             # Generate reset token
             token = default_token_generator.make_token(user)
             uid   = urlsafe_base64_encode(force_bytes(user.pk))
@@ -147,7 +174,7 @@ class ForgotPasswordView(APIView):
                 subject        = 'Glacier — Reset your password',
                 message        = f'Click this link to reset your password:\n\n{reset_link}\n\nThis link expires in 24 hours.',
                 from_email     = settings.DEFAULT_FROM_EMAIL,
-                recipient_list = [email],
+                recipient_list = [user.email],
             )
         except User.DoesNotExist:
             pass  # Don't reveal if email exists — security best practice
@@ -183,9 +210,16 @@ class ResetPasswordView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Set new password
+            try:
+                validate_password(password or '', user=user)
+            except DjangoValidationError as e:
+                return Response({'error': ' '.join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Set new password and sign out every existing session.
             user.set_password(password)
             user.save()
+            revoke_refresh_tokens(user)
+            cache.delete(_lockout_key(user.email))
             return Response({'message': 'Password reset successfully'})
 
         except (User.DoesNotExist, ValueError, TypeError):
@@ -219,11 +253,18 @@ class ChangePasswordView(APIView):
                 {'error': 'New passwords do not match'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        if len(new_password) < 8:
-            return Response(
-                {'error': 'Password must be at least 8 characters'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as e:
+            return Response({'error': ' '.join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
         user.set_password(new_password)
         user.save()
-        return Response({'message': 'Password changed successfully'})
+        # Sign out everywhere else (a stolen session stops working); this
+        # device gets fresh tokens so it stays signed in.
+        revoke_refresh_tokens(user)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'message':       'Password changed successfully',
+            'access_token':  str(refresh.access_token),
+            'refresh_token': str(refresh),
+        })
