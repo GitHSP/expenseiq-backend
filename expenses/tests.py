@@ -245,6 +245,22 @@ class TransferMatchingTests(TestCase):
         self.assertEqual(rows["Mbna Payment"]["transfer_match"]["type"], "pair")
         self.assertEqual(rows["Payment Received"]["transfer_match"]["type"], "pair")
 
+    def test_same_amount_hopping_through_accounts_pairs_each_hop(self):
+        # $500 Simplii → CIBC, then $500 CIBC → Visa, same day, files picked
+        # in any order (Visa before CIBC here).
+        simplii = "Date,Description,Amount\n2026-05-06,TRANSFER TO CIBC,-500.00\n"
+        cibc = ("Date,Description,Amount\n2026-05-06,INTERNET TRANSFER FROM SIMPLII,500.00\n"
+                "2026-05-06,PAYMENT CIBC VISA,-500.00\n2026-05-06,LOBLAWS,-42.10\n")
+        visa = "Date,Description,Amount\n2026-05-03,UBER EATS,-30.00\n2026-05-06,PAYMENT THANK YOU,500.00\n"
+        res = self.preview(("simplii.csv", simplii), ("visa.csv", visa), ("cibc.csv", cibc))
+        rows = self.by_title(res)
+        hop1 = rows["Transfer To Cibc"]["transfer_match"]
+        hop2 = rows["Payment Cibc Visa"]["transfer_match"]
+        self.assertEqual(res.data["rows"][hop1["row"]]["file"], 2)   # Simplii → CIBC deposit
+        self.assertEqual(res.data["rows"][hop2["row"]]["file"], 1)   # CIBC → Visa credit
+        self.assertIsNone(rows["Loblaws"]["transfer_match"])
+        self.assertIsNone(rows["Uber Eats"]["transfer_match"])
+
     def test_matches_other_half_imported_earlier(self):
         Expense.objects.create(user=self.user, title="Interac E-Transfer Sent", amount=500, category="Other",
                                date=date(2026, 10, 6), notes="Imported from simplii.csv")

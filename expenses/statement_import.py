@@ -426,17 +426,25 @@ def build_preview(user, files):
         if not b["out"]:
             incoming_by_amount.setdefault(b["abs"], []).append(j)
 
-    pairs = {}
+    options = {}
     for i, a in enumerate(flat):
-        if i in pairs or not a["out"]:
+        if not a["out"]:
             continue
-        candidates = [
+        options[i] = [
             (abs((a["date"] - flat[j]["date"]).days), j)
             for j in incoming_by_amount.get(a["abs"], [])
-            if j not in pairs and flat[j]["file"] != a["file"]
+            if flat[j]["file"] != a["file"]
             and _close(a["date"], flat[j]["date"])
             and (MONEY_MOVEMENT.search(a["description"]) or MONEY_MOVEMENT.search(flat[j]["description"]))
         ]
+
+    # Money often hops through accounts with the same amount — Simplii →
+    # CIBC, then CIBC → Visa. Pair the rows with the fewest possible partners
+    # first so CIBC's payment takes the Visa credit, leaving CIBC's deposit
+    # for Simplii, instead of Simplii grabbing the Visa credit.
+    pairs = {}
+    for i in sorted(options, key=lambda i: (len(options[i]), i)):
+        candidates = [c for c in options[i] if c[1] not in pairs]
         if candidates:
             j = min(candidates)[1]
             pairs[i], pairs[j] = j, i
