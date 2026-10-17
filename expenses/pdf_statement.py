@@ -301,7 +301,9 @@ class Table:
         return amount, balance
 
 
-def parse_pdf(raw):
+def parse_pdf(raw, details=None):
+    """Transaction rows. If `details` is a dict, it also gets the first pages' text
+    and the statement end date, for working out the account and period."""
     try:
         import pdfplumber
     except ImportError:  # pragma: no cover - deployment problem, not user error
@@ -319,6 +321,9 @@ def parse_pdf(raw):
     if not all_text.strip():
         raise PdfStatementError("This PDF has no readable text (it's probably a scanned image). Please download a CSV instead.")
     end = _statement_end(all_text)
+    if details is not None:
+        details["text"] = " ".join(w["text"] for page in pages[:2] for w in page)
+        details["end"] = end
 
     lines = [line for words in pages for line in _group_lines(words)]
     if any(Table.from_header(line, "") for line in lines):

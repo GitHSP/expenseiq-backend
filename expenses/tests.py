@@ -173,7 +173,7 @@ class StatementApiTests(TestCase):
             {"kind": "income", "title": "Payroll", "amount": "1150.00", "date": "2026-10-15", "category": "Salary"},
         ]}, format="json")
         self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.data, {"imported_expenses": 1, "imported_income": 1, "ticked_checklist": 0})
+        self.assertEqual(res.data, {"imported_expenses": 1, "imported_income": 1, "ticked_checklist": 0, "statements_saved": 0})
         exp = Expense.objects.get()
         self.assertEqual(exp.user, self.user)
         self.assertEqual(exp.tags, ["imported"])

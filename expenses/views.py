@@ -1,4 +1,7 @@
+import hashlib
 import logging
+import re
+from datetime                   import date, timedelta
 from decimal                    import Decimal
 
 from django.db                  import transaction
@@ -8,7 +11,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response    import Response
 from rest_framework.views       import APIView
 
-from .models      import Expense, Income
+from .models      import Account, Expense, Income, Statement, StatementTransaction
+from .accounts    import guess_account, match_existing_account, statement_period
 from .serializers import ExpenseSerializer, IncomeSerializer
 from .bulk        import MODELS as BULK_MODELS, bulk_delete
 from financial_planner.models   import ChecklistItem
@@ -96,8 +100,9 @@ class StatementPreviewView(APIView):
             if upload.size > MAX_STATEMENT_BYTES:
                 skipped.append({"filename": upload.name, "error": "Too large (5 MB max per file)."})
                 continue
+            raw = upload.read()
             try:
-                rows, info = parse_statement(upload.name, upload.read())
+                rows, info = parse_statement(upload.name, raw)
             except StatementError as e:
                 skipped.append({"filename": upload.name, "error": str(e)})
                 continue
@@ -106,7 +111,8 @@ class StatementPreviewView(APIView):
                 skipped.append({"filename": upload.name, "error": "Something went wrong reading this file. Please try its CSV version."})
                 continue
             total_rows += len(rows)
-            files.append({"filename": upload.name, "rows": rows, "info": info, "flip": suggest_flip(rows, info)})
+            files.append({"filename": upload.name, "rows": rows, "info": info, "flip": suggest_flip(rows, info),
+                          "hash": hashlib.sha256(raw).hexdigest()})
 
         if not files:
             message = skipped[0]["error"] if len(skipped) == 1 else "None of these files could be read."
@@ -116,12 +122,31 @@ class StatementPreviewView(APIView):
             return Response({"error": f"These files have {total_rows} transactions — please import at most {MAX_ROWS} at a time."},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        # Which of the user's accounts each statement belongs to (a new one
+        # is suggested when there's no match), and whether it's been
+        # uploaded before.
+        accounts = list(Account.objects.filter(user=request.user))
+        uploaded = {s.file_hash: s for s in Statement.objects.filter(
+            user=request.user, file_hash__in=[f["hash"] for f in files]).select_related("account")}
+        file_info = []
+        for f in files:
+            guess = guess_account(f["filename"], f["info"])
+            existing = match_existing_account(accounts, guess)
+            start, end = statement_period(f["info"], f["rows"])
+            before = uploaded.get(f["hash"])
+            file_info.append({
+                "filename": f["filename"], "format": f["info"]["format"],
+                "suggest_flip": f["flip"], "count": len(f["rows"]),
+                "file_hash": f["hash"],
+                "period_start": start.isoformat(), "period_end": end.isoformat(),
+                "account_id": before.account_id if before else (existing.id if existing else None),
+                "account_guess": guess,
+                "already_uploaded": {"date": before.uploaded_at.date().isoformat(), "account": before.account.name} if before else None,
+            })
+
         return Response({
-            "files": [
-                {"filename": f["filename"], "format": f["info"]["format"],
-                 "suggest_flip": f["flip"], "count": len(f["rows"])}
-                for f in files
-            ],
+            "files": file_info,
+            "accounts": [{"id": a.id, "name": a.name, "kind": a.kind} for a in accounts],
             "rows": match_checklist(request.user, build_preview(request.user, files), files),
             "skipped": skipped,
         })
@@ -130,55 +155,58 @@ class StatementPreviewView(APIView):
 class StatementImportView(APIView):
     """
     POST /api/statements/import/
-    {"filename": "...", "rows": [{"kind": "expense"|"income", "title", "amount",
-                                  "date", "category"}, ...]}
-    All rows are validated first; nothing is saved unless every row is valid.
+    {"statements": [{"filename", "file_hash", "period_start", "period_end",
+                     "account": {"id"} | {"name", "kind", "institution", "last4"},
+                     "transactions": [{"date", "description", "title", "amount" (signed),
+                                       "category", "kind": "transfer"|"duplicate"|"skipped",
+                                       "import": {"kind": "expense"|"income", "title", "category"}?}]}],
+     "checklist_items": [ids]}
+    Every statement is kept with all its rows (for the Accounts page); rows
+    with "import" are also saved as expenses/income. The older form
+    {"filename", "rows": [{"kind", "title", "amount", "date", "category", "source"}]}
+    saves just the rows. Everything is validated first; nothing is saved
+    unless all of it is valid.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        statements = request.data.get("statements")
         rows = request.data.get("rows") or []
-        if not isinstance(rows, list) or not (rows or request.data.get("checklist_items")):
-            return Response({"error": "Nothing to import."}, status=status.HTTP_400_BAD_REQUEST)
-        if len(rows) > MAX_ROWS:
-            return Response({"error": f"Import at most {MAX_ROWS} rows at a time."}, status=status.HTTP_400_BAD_REQUEST)
+        tick_ids = request.data.get("checklist_items") or []
+        if not isinstance(tick_ids, list) or not all(isinstance(i, int) for i in tick_ids):
+            return Response({"error": "checklist_items must be a list of ids."}, status=status.HTTP_400_BAD_REQUEST)
 
-        filename = str(request.data.get("filename") or "statement")[:100]
+        if statements is not None:
+            if not isinstance(statements, list) or not statements:
+                return Response({"error": "Nothing to import."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                plans, entries = self._plan_statements(request.user, statements)
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            if not isinstance(rows, list) or not (rows or tick_ids):
+                return Response({"error": "Nothing to import."}, status=status.HTTP_400_BAD_REQUEST)
+            if len(rows) > MAX_ROWS:
+                return Response({"error": f"Import at most {MAX_ROWS} rows at a time."}, status=status.HTTP_400_BAD_REQUEST)
+            filename = str(request.data.get("filename") or "statement")[:100]
+            plans = []
+            entries = [(row, str(row.get("source") or filename) if isinstance(row, dict) else filename) for row in rows]
+
         serializers_to_save, errors = [], []
-        for i, row in enumerate(rows):
-            if not isinstance(row, dict) or row.get("kind") not in ("expense", "income"):
-                errors.append({"row": i, "errors": {"kind": ["Must be 'expense' or 'income'."]}})
-                continue
-            data = {
-                "title":    row.get("title"),
-                "amount":   row.get("amount"),
-                "category": row.get("category"),
-                "date":     row.get("date"),
-                "notes":    f"Imported from {str(row.get('source') or filename)[:100]}",
-            }
-            if row["kind"] == "expense":
-                data["tags"] = ["imported"]
-                serializer = ExpenseSerializer(data=data)
-            else:
-                serializer = IncomeSerializer(data=data)
-            if serializer.is_valid():
-                serializers_to_save.append(serializer)
-            else:
-                errors.append({"row": i, "errors": serializer.errors})
-
+        for i, (row, source) in enumerate(entries):
+            serializer, error = _entry_serializer(row, source)
+            serializers_to_save.append(serializer)
+            if error:
+                errors.append({"row": i, "errors": error})
         if errors:
             return Response(
                 {"error": f"{len(errors)} row(s) couldn't be imported — nothing was saved.", "details": errors[:20]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tick_ids = request.data.get("checklist_items") or []
-        if not isinstance(tick_ids, list) or not all(isinstance(i, int) for i in tick_ids):
-            return Response({"error": "checklist_items must be a list of ids."}, status=status.HTTP_400_BAD_REQUEST)
-
         with transaction.atomic(), activity_context(source="import", quiet={"expense", "income"}):
-            for serializer in serializers_to_save:
-                serializer.save(user=request.user)
+            saved = [s.save(user=request.user) for s in serializers_to_save]
+            statements_saved = self._save_statements(request.user, plans, saved)
             # Same side effects as ticking in the Planner: debt payments
             # reduce the debt's balance, savings go to the emergency fund.
             ticked = 0
@@ -189,7 +217,7 @@ class StatementImportView(APIView):
                 ticked += 1
 
         expenses = sum(1 for s in serializers_to_save if isinstance(s, ExpenseSerializer))
-        sources = sorted({str(r.get("source") or filename) for r in rows if isinstance(r, dict)}) or [filename]
+        sources = sorted({source for _, source in entries} | {p["filename"] for p in plans}) or ["statement"]
         totals = {"expense": Decimal("0"), "income": Decimal("0")}
         for s in serializers_to_save:
             totals["expense" if isinstance(s, ExpenseSerializer) else "income"] += s.validated_data["amount"]
@@ -199,7 +227,7 @@ class StatementImportView(APIView):
                 "files": sources,
                 "expenses": expenses, "expense_total": str(totals["expense"]),
                 "income": len(serializers_to_save) - expenses, "income_total": str(totals["income"]),
-                "ticked": ticked,
+                "ticked": ticked, "statements": statements_saved,
             },
             source="import", reason="",
         )
@@ -207,7 +235,137 @@ class StatementImportView(APIView):
             "imported_expenses": expenses,
             "imported_income":   len(serializers_to_save) - expenses,
             "ticked_checklist":  ticked,
+            "statements_saved":  statements_saved,
         }, status=status.HTTP_201_CREATED)
+
+    # ── statements: check everything before saving anything ──
+    def _plan_statements(self, user, statements):
+        accounts = {a.id: a for a in Account.objects.filter(user=user)}
+        plans, entries, total = [], [], 0
+        for n, st in enumerate(statements, 1):
+            if not isinstance(st, dict):
+                raise ValueError(f"Statement {n} is not valid.")
+            filename = str(st.get("filename") or "statement")[:255]
+            txs = st.get("transactions")
+            if not isinstance(txs, list) or not txs:
+                raise ValueError(f"{filename} has no transactions.")
+            total += len(txs)
+            if total > MAX_ROWS:
+                raise ValueError(f"Import at most {MAX_ROWS} transactions at a time.")
+
+            acct = st.get("account") or {}
+            if not isinstance(acct, dict):
+                raise ValueError(f"Choose an account for {filename}.")
+            if acct.get("id") is not None:
+                if acct.get("id") not in accounts:
+                    raise ValueError(f"Choose an account for {filename}.")
+                account = {"id": acct["id"]}
+            else:
+                name = str(acct.get("name") or "").strip()[:100]
+                if not name:
+                    raise ValueError(f"Name the account for {filename}.")
+                kind = acct.get("kind") if acct.get("kind") in dict(Account.KINDS) else "other"
+                account = {"name": name, "kind": kind,
+                           "institution": str(acct.get("institution") or "")[:50],
+                           "last4": re.sub(r"\D", "", str(acct.get("last4") or ""))[-4:]}
+
+            parsed = []
+            for t in txs:
+                if not isinstance(t, dict):
+                    raise ValueError(f"{filename} has an invalid transaction.")
+                try:
+                    d = date.fromisoformat(str(t.get("date")))
+                    amount = Decimal(str(t.get("amount"))).quantize(Decimal("0.01"))
+                except (ValueError, ArithmeticError):
+                    raise ValueError(f"{filename} has a transaction with an invalid date or amount.")
+                description = str(t.get("description") or t.get("title") or "")[:255]
+                entry = t.get("import")
+                index = None
+                if entry is not None:
+                    if not isinstance(entry, dict):
+                        raise ValueError(f"{filename} has an invalid transaction.")
+                    index = len(entries)
+                    entries.append(({**entry, "amount": str(abs(amount)), "date": d.isoformat()}, filename))
+                hint = t.get("kind") if t.get("kind") in ("transfer", "duplicate", "skipped") else "skipped"
+                parsed.append({
+                    "date": d, "amount": amount, "description": description,
+                    "title": str((entry or {}).get("title") or t.get("title") or description)[:255],
+                    "category": str((entry or {}).get("category") or t.get("category") or "")[:50],
+                    "kind": entry.get("kind") if entry else hint, "entry": index,
+                })
+
+            try:
+                start = date.fromisoformat(str(st.get("period_start")))
+                end = date.fromisoformat(str(st.get("period_end")))
+            except ValueError:
+                start, end = min(p["date"] for p in parsed), max(p["date"] for p in parsed)
+            plans.append({"filename": filename, "file_hash": str(st.get("file_hash") or "")[:64],
+                          "account": account, "start": min(start, end), "end": max(start, end), "transactions": parsed})
+        return plans, entries
+
+    def _save_statements(self, user, plans, saved):
+        count = 0
+        for plan in plans:
+            spec = plan["account"]
+            if "id" in spec:
+                account = Account.objects.get(id=spec["id"], user=user)
+            else:
+                account, _ = Account.objects.get_or_create(
+                    user=user, name=spec["name"],
+                    defaults={"kind": spec["kind"], "institution": spec["institution"], "last4": spec["last4"]},
+                )
+            # The same file again: its rows are already on record.
+            if plan["file_hash"] and Statement.objects.filter(user=user, file_hash=plan["file_hash"]).exists():
+                continue
+            statement = Statement.objects.create(
+                user=user, account=account, filename=plan["filename"], file_hash=plan["file_hash"],
+                period_start=plan["start"], period_end=plan["end"],
+            )
+            count += 1
+            # Overlapping statements (e.g. a PDF and a CSV export of the same
+            # weeks) shouldn't list a transaction twice.
+            existing = {}
+            for tx in StatementTransaction.objects.filter(
+                account=account, date__range=(plan["start"] - timedelta(days=3), plan["end"] + timedelta(days=3)),
+            ):
+                existing.setdefault((tx.date, tx.amount, tx.description.lower()), tx)
+            new = []
+            for p in plan["transactions"]:
+                obj = saved[p["entry"]] if p["entry"] is not None else None
+                link = {"expense": obj} if p["kind"] == "expense" else {"income": obj} if p["kind"] == "income" else {}
+                earlier = existing.get((p["date"], p["amount"], p["description"].lower()))
+                if earlier is not None:
+                    if obj is not None and not (earlier.expense_id or earlier.income_id):
+                        for field, value in link.items():
+                            setattr(earlier, field, value)
+                        earlier.kind = p["kind"]
+                        earlier.save(update_fields=[*link, "kind"])
+                    continue
+                new.append(StatementTransaction(
+                    user=user, statement=statement, account=account, date=p["date"], amount=p["amount"],
+                    description=p["description"], title=p["title"], category=p["category"], kind=p["kind"], **link,
+                ))
+            StatementTransaction.objects.bulk_create(new)
+        return count
+
+
+def _entry_serializer(row, source):
+    """(serializer, errors) for one expense/income row to import."""
+    if not isinstance(row, dict) or row.get("kind") not in ("expense", "income"):
+        return None, {"kind": ["Must be 'expense' or 'income'."]}
+    data = {
+        "title":    row.get("title"),
+        "amount":   row.get("amount"),
+        "category": row.get("category"),
+        "date":     row.get("date"),
+        "notes":    f"Imported from {str(source)[:100]}",
+    }
+    if row["kind"] == "expense":
+        data["tags"] = ["imported"]
+        serializer = ExpenseSerializer(data=data)
+    else:
+        serializer = IncomeSerializer(data=data)
+    return serializer, (None if serializer.is_valid() else serializer.errors)
 
 
 # ─────────────────────────────────────────────

@@ -276,13 +276,15 @@ def parse_statement(filename, raw):
     name = (filename or "").lower()
     if raw[:5] == b"%PDF-" or name.endswith(".pdf"):
         from .pdf_statement import PdfStatementError, parse_pdf
+        details = {}
         try:
-            rows = parse_pdf(raw)
+            rows = parse_pdf(raw, details)
         except PdfStatementError as e:
             raise StatementError(str(e))
         if len(rows) > MAX_ROWS:
             raise StatementError(f"That file has {len(rows)} transactions — please import at most {MAX_ROWS} at a time.")
-        return rows, {"format": "pdf", "signed_amount": True}
+        return rows, {"format": "pdf", "signed_amount": True,
+                      "header_text": details.get("text", ""), "end": details.get("end")}
 
     text = _decode(raw)
     if name.endswith((".ofx", ".qfx")) or "<OFX>" in text[:5000].upper():
@@ -302,7 +304,8 @@ def parse_statement(filename, raw):
         raise StatementError("No transactions found in the file.")
     if len(rows) > MAX_ROWS:
         raise StatementError(f"That file has {len(rows)} transactions — please import at most {MAX_ROWS} at a time.")
-    return rows, info
+    # OFX files name the account (<ACCTID>, <CCACCTFROM>); CSVs rarely do.
+    return rows, {**info, "header_text": text[:4000] if info["format"] == "ofx" else ""}
 
 
 # ─────────────────────────────────────────────
