@@ -8,3 +8,6 @@ staticfiles/
 *.sqlite3
 # Personal data files (e.g. planner imports)
 *.local.json
+
+# Database files and backups
+*.sqlite3*
