@@ -12,6 +12,7 @@ urlpatterns = [
     path('statements/import/',  views.StatementImportView.as_view(),   name='statement-import'),
     path('statements/accounts/',          account_views.AccountListView.as_view(),         name='account-list'),
     path('statements/accounts/<int:pk>/', account_views.AccountDetailView.as_view(),       name='account-detail'),
+    path('statements/accounts/<int:pk>/merge/', account_views.AccountMergeView.as_view(), name='account-merge'),
     path('statements/transactions/',      account_views.AccountTransactionsView.as_view(), name='account-transactions'),
     path('statements/recurring/',         account_views.RecurringChargesView.as_view(),    name='recurring-charges'),
     path('statements/<int:pk>/',          account_views.StatementDetailView.as_view(),     name='statement-detail'),

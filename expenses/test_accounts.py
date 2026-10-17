@@ -259,3 +259,38 @@ class AccountsApiTests(TestCase):
         self.assertEqual(self.client.delete(f"/api/statements/{st.id}/").status_code, 404)
         self.assertEqual(self.client.patch(f"/api/statements/accounts/{theirs.id}/", {"name": "Mine"}, format="json").status_code, 404)
         self.assertTrue(Statement.objects.filter(id=st.id).exists())
+
+
+class MergeAndMoveTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email="mm@example.test", username="mm", password="x-Test-12345")
+        self.other = User.objects.create_user(email="mm2@example.test", username="mm2", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.simplii = Account.objects.create(user=self.user, name="Simplii Chequing •6701", kind="chequing")
+        self.wrong = Account.objects.create(user=self.user, name="Wealthsimple Chequing •6701", kind="chequing")
+        self.st = Statement.objects.create(user=self.user, account=self.wrong, filename="s.pdf",
+                                           period_start=date(2026, 5, 1), period_end=date(2026, 5, 31))
+        tx(self.user, self.wrong, self.st, date(2026, 5, 3), "Rent", "-1000")
+
+    def test_merge_moves_everything_and_removes_the_account(self):
+        res = self.client.post(f"/api/statements/accounts/{self.wrong.id}/merge/", {"into": self.simplii.id}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(Account.objects.filter(id=self.wrong.id).exists())
+        self.st.refresh_from_db()
+        self.assertEqual(self.st.account_id, self.simplii.id)
+        self.assertEqual(StatementTransaction.objects.get().account_id, self.simplii.id)
+
+    def test_move_one_statement(self):
+        res = self.client.patch(f"/api/statements/{self.st.id}/", {"account": self.simplii.id}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(StatementTransaction.objects.get().account_id, self.simplii.id)
+        self.assertTrue(Account.objects.filter(id=self.wrong.id).exists())
+
+    def test_cannot_merge_into_or_from_someone_elses_account(self):
+        theirs = Account.objects.create(user=self.other, name="Theirs", kind="chequing")
+        self.assertEqual(self.client.post(f"/api/statements/accounts/{self.wrong.id}/merge/", {"into": theirs.id}, format="json").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/statements/accounts/{theirs.id}/merge/", {"into": self.simplii.id}, format="json").status_code, 404)
+        self.assertEqual(self.client.patch(f"/api/statements/{self.st.id}/", {"account": theirs.id}, format="json").status_code, 404)
+        self.assertEqual(Statement.objects.get().account_id, self.wrong.id)

@@ -119,10 +119,46 @@ class AccountDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class StatementDetailView(APIView):
-    """DELETE /api/statements/<id>/?delete_entries=1 — remove a statement; with
-    delete_entries, also the expenses and income that were saved from it."""
+class AccountMergeView(APIView):
+    """POST /api/statements/accounts/<id>/merge/ {"into": <id>} — move every
+    statement and transaction of this account into another one and remove it
+    (for when one account was detected as two)."""
     permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        source = Account.objects.filter(user=request.user, pk=pk).first()
+        target = Account.objects.filter(user=request.user, pk=request.data.get("into")).first()
+        if not source or not target:
+            return Response({"error": "Account not found."}, status=status.HTTP_404_NOT_FOUND)
+        if source.pk == target.pk:
+            return Response({"error": "Choose a different account to merge into."}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            moved = source.statements.update(account=target)
+            StatementTransaction.objects.filter(account=source).update(account=target)
+            name = source.name
+            source.delete()
+        log_activity(request.user, "import", "updated", f"Merged {name} into {target.name}",
+                     details={"statements": moved}, source="app", reason="")
+        return Response({"id": target.id, "name": target.name, "statements_moved": moved})
+
+
+class StatementDetailView(APIView):
+    """PATCH /api/statements/<id>/ {"account": <id>} — move a statement (and its
+    rows) to another account. DELETE /api/statements/<id>/?delete_entries=1 —
+    remove a statement; with delete_entries, also the expenses and income
+    that were saved from it."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        statement = Statement.objects.filter(user=request.user, pk=pk).first()
+        target = Account.objects.filter(user=request.user, pk=request.data.get("account")).first()
+        if not statement or not target:
+            return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            statement.account = target
+            statement.save(update_fields=["account"])
+            statement.transactions.update(account=target)
+        return Response({"id": statement.id, "account": target.id})
 
     def delete(self, request, pk):
         statement = Statement.objects.filter(user=request.user, pk=pk).select_related("account").first()
