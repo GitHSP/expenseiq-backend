@@ -17,6 +17,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.cache          import cache
 from django.core.exceptions     import ValidationError as DjangoValidationError
 
+from . import two_factor
 from .serializers import RegisterSerializer, UserSerializer
 
 User = get_user_model()
@@ -110,13 +111,112 @@ class LoginView(APIView):
             )
 
         cache.delete(key)
-        # Generate JWT tokens
-        refresh = RefreshToken.for_user(user)
+
+        # With two-factor on, the password alone isn't enough: hand back a
+        # short-lived token for the code step instead of a session.
+        if two_factor.is_enabled(user):
+            return Response({
+                'mfa_required': True,
+                'mfa_token':    two_factor.make_mfa_token(user),
+            })
+        return Response(_session_for(user))
+
+
+def _session_for(user):
+    refresh = RefreshToken.for_user(user)
+    return {
+        'user':          UserSerializer(user).data,
+        'access_token':  str(refresh.access_token),
+        'refresh_token': str(refresh),
+    }
+
+
+class LoginTwoFactorView(APIView):
+    """
+    POST /api/auth/login/2fa/  {"mfa_token", "code"}
+    Second login step: a 6-digit authenticator code or a backup code.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        user_id = two_factor.read_mfa_token(request.data.get('mfa_token'))
+        user = User.objects.filter(pk=user_id, is_active=True).first() if user_id else None
+        if user is None or not two_factor.is_enabled(user):
+            return Response({'error': 'Your sign-in expired. Please enter your password again.'},
+                            status=status.HTTP_401_UNAUTHORIZED)
+        if two_factor.is_locked(user):
+            return Response({'error': 'Too many wrong codes. Try again in 15 minutes.'},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        ok, used_backup = two_factor.verify(user, request.data.get('code'))
+        if not ok:
+            return Response({'error': 'That code is incorrect or has already been used.'},
+                            status=status.HTTP_401_UNAUTHORIZED)
+        data = _session_for(user)
+        if used_backup:
+            data['backup_codes_left'] = len(user.two_factor.backup_code_hashes)
+        return Response(data)
+
+
+class TwoFactorView(APIView):
+    """
+    GET    /api/auth/2fa/          status
+    POST   /api/auth/2fa/          start setup -> QR code + key (not active yet)
+    PUT    /api/auth/2fa/          {"code"} confirm setup -> turns it on, returns backup codes
+    DELETE /api/auth/2fa/          {"password", "code"} turn it off
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tf = getattr(request.user, 'two_factor', None)
         return Response({
-            'user':          UserSerializer(user).data,
-            'access_token':  str(refresh.access_token),
-            'refresh_token': str(refresh),
+            'enabled':           bool(tf and tf.enabled),
+            'enabled_at':        tf.enabled_at if tf and tf.enabled else None,
+            'backup_codes_left': len(tf.backup_code_hashes) if tf and tf.enabled else 0,
         })
+
+    def post(self, request):
+        if two_factor.is_enabled(request.user):
+            return Response({'error': 'Two-factor login is already on.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(two_factor.start_setup(request.user))
+
+    def put(self, request):
+        if two_factor.is_locked(request.user):
+            return Response({'error': 'Too many wrong codes. Try again in 15 minutes.'},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        codes = two_factor.confirm_setup(request.user, request.data.get('code'))
+        if codes is None:
+            return Response({'error': "That code didn't match. Check your phone's time is set automatically and try the newest code."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response({'enabled': True, 'backup_codes': codes})
+
+    def delete(self, request):
+        user = request.user
+        if not two_factor.is_enabled(user):
+            return Response({'error': 'Two-factor login is already off.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.check_password(request.data.get('password') or ''):
+            return Response({'error': 'Your password is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+        ok, _ = two_factor.verify(user, request.data.get('code'))
+        if not ok:
+            return Response({'error': 'That code is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+        user.two_factor.delete()
+        return Response({'enabled': False})
+
+
+class TwoFactorBackupCodesView(APIView):
+    """POST /api/auth/2fa/backup-codes/ {"code"} — replace all backup codes."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not two_factor.is_enabled(user):
+            return Response({'error': 'Turn on two-factor login first.'}, status=status.HTTP_400_BAD_REQUEST)
+        ok, _ = two_factor.verify(user, request.data.get('code'), allow_backup=False)
+        if not ok:
+            return Response({'error': 'That code is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+        codes, hashes = two_factor.new_backup_codes()
+        user.two_factor.backup_code_hashes = hashes
+        user.two_factor.save(update_fields=['backup_code_hashes'])
+        return Response({'backup_codes': codes})
 
 
 class LogoutView(APIView):
@@ -138,6 +238,15 @@ class LogoutView(APIView):
                 {'error': 'Invalid token'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class LogoutAllView(APIView):
+    """POST /api/auth/logout-all/ — end every session on every device."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        revoke_refresh_tokens(request.user)
+        return Response({'message': 'Signed out everywhere'})
 
 
 class MeView(APIView):
