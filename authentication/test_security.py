@@ -177,3 +177,17 @@ class PasswordAndSessionTests(TestCase):
                                                     "new_password2": new}, format="json")
         res = APIClient().post("/api/auth/token/refresh/", {"refresh": stolen_refresh}, format="json")
         self.assertEqual(res.status_code, 401)
+
+
+class LogoutAllTests(TestCase):
+    def test_signs_out_every_device(self):
+        cache.clear()
+        user = make_user("all@example.test")
+        login = lambda: APIClient().post("/api/auth/login/", {"email": "all@example.test", "password": PASSWORD}, format="json").data
+        phone, laptop = login(), login()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {laptop['access_token']}")
+        self.assertEqual(client.post("/api/auth/logout-all/").status_code, 200)
+        for session in (phone, laptop):
+            res = APIClient().post("/api/auth/token/refresh/", {"refresh": session["refresh_token"]}, format="json")
+            self.assertEqual(res.status_code, 401)
