@@ -50,7 +50,7 @@ FULL_DATE_RES = [
 ]
 
 AMOUNT_RE = re.compile(
-    # Optional trailing footnote stars: CIBC prints "INTEREST REVERSAL -0.18***".
+    # Optional trailing footnote stars: CIBC prints "INTEREST REVERSAL -0.27***".
     r"^\(?-?\$?\d{1,3}(?:,\d{3})*\.\d{2}\)?(?:CR|DR|OD|-)?\**$|^\(?-?\$?\d+\.\d{2}\)?(?:CR|DR|OD|-)?\**$",
     re.IGNORECASE,
 )
@@ -71,7 +71,7 @@ SKIP_LINE_RE = re.compile(
 
 # Summary wording that can sit on a dated line (e.g. "Sep 1 Opening balance").
 # Narrower than SKIP_LINE_RE: a dated row in a table is normally a real
-# transaction, e.g. CIBC's interest table lists "Jun 15 CASH ADVANCES 22.99% 2.94".
+# transaction, e.g. CIBC's interest table lists "Jun 15 CASH ADVANCES 22.99% 4.40".
 SKIP_DATED_RE = re.compile(
     r"opening balance|closing balance|balance forward|previous balance|new balance|"
     r"statement balance|minimum payment|payment due",
@@ -242,7 +242,7 @@ class Table:
                 continue
             nxt = i + 1
             while nxt < len(phrases) and phrases[nxt]["text"] in ("=", ":", "+", "-"):
-                nxt += 1                              # "Account Balance = $4,945.94"
+                nxt += 1                              # "Account Balance = $2,318.27"
             if nxt < len(phrases) and phrases[nxt]["money"]:
                 continue
             heads.append(p)
@@ -297,7 +297,7 @@ class Table:
                 continue
             cells[kind] = f'{cells.get(kind, "")} {w["text"]}'.strip()
         # One amount printed out of line with its column (CIBC's
-        # "INTEREST REVERSAL -0.18***" sits under the rate column): if it's
+        # "INTEREST REVERSAL -0.27***" sits under the rate column): if it's
         # the row's only amount and right of the description, it's the amount.
         if not money and len(stray) == 1 and self.text_cols and stray[0]["x0"] > max(c["x1"] for c in self.text_cols):
             spendable = [c for c in self.money_cols if c["kind"] != "balance"] or self.money_cols
@@ -416,7 +416,7 @@ def _parse_tables(lines, end):
             _, description = _leading_date(description, end)
 
         # "Total ..." can start in the date column (CIBC: "Total for 4505 XXXX
-        # XXXX 8138 $102.46"), so check the whole line too.
+        # XXXX 0042 $101.10"), so check the whole line too.
         if not d and (TABLE_END_RE.search(description or row_text) or TABLE_END_RE.search(text)):
             balance = next((_parse_money(w["text"]) for k, w in money if k == "balance"), None)
             if balance is not None:

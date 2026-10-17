@@ -406,7 +406,7 @@ def csv_statements():
 
     amex = ["Date,Date Processed,Description,Cardmember,Amount"]
     for t in card_rows:
-        amex.append(f'{t.day:%d %b %Y},{t.day:%d %b %Y},"{t.lines[0]}",SARATH P,{-t.amount}')
+        amex.append(f'{t.day:%d %b %Y},{t.day:%d %b %Y},"{t.lines[0]}",ALEX SAMPLE,{-t.amount}')
     out.append(_csv("amex.csv", "Amex", "charges positive (needs flip), day-first text dates", "\n".join(amex) + "\n", exp_card))
 
     edge = ["Account: Chequing 01234", "Statement period: 2026-09-01 to 2026-09-30", "",
@@ -434,9 +434,9 @@ def cibc_visa_2026_pdf():
     _txt(c, 40, 750, "CIBC Dividend Visa Card", 13, bold=True)
     _txt(c, 40, 734, "Prepared for: MR ALEX SAMPLE   May 16 to June 15, 2026   Account number: 4505 XXXX XXXX 0042", 8)
     bx = 400
-    for i, (label, val) in enumerate([("Previous balance", "$3,471.83"), ("Total credits", "- $280.18"),
-                                      ("Total charges", "+ $162.25"), ("Total balance", "= $3,353.90"),
-                                      ("Minimum payment", "$110.27"), ("Payment due date", "Jul 8, 2026")]):
+    for i, (label, val) in enumerate([("Previous balance", "$2,180.40"), ("Total credits", "- $280.18"),
+                                      ("Total charges", "+ $162.25"), ("Total balance", "= $2,062.47"),
+                                      ("Minimum payment", "$65.00"), ("Payment due date", "Jul 8, 2026")]):
         _txt(c, bx, 700 - i * 12, label, 8); _txt(c, 572, 700 - i * 12, val, 8, right=True)
     c.showPage()
 
@@ -465,22 +465,22 @@ def cibc_visa_2026_pdf():
 
     _txt(c, 36, y, "Your interest", 10, bold=True); y -= 16
     header(y, "Annual interest rate"); y -= 20
-    row(y, "Jun 15", "Jun 15", "REGULAR PURCHASES", "51.05", "21.99%"); y -= 12
-    row(y, "Jun 15", "Jun 15", "CASH ADVANCES", "2.94", "22.99%"); y -= 12
-    row(y, "Jun 13", "Jun 16", "INTEREST REVERSAL", "-0.18***", amount_x=487); y -= 12   # printed out of line
-    _txt(c, 36, y, "Total interest this period $53.99", bold=True); y -= 10
+    row(y, "Jun 15", "Jun 15", "REGULAR PURCHASES", "38.12", "21.99%"); y -= 12
+    row(y, "Jun 15", "Jun 15", "CASH ADVANCES", "4.40", "22.99%"); y -= 12
+    row(y, "Jun 13", "Jun 16", "INTEREST REVERSAL", "-0.27***", amount_x=487); y -= 12   # printed out of line
+    _txt(c, 36, y, "Total interest this period $42.52", bold=True); y -= 10
     _txt(c, 36, y, '*** The interest adjustments above are not included in the "Total Interest this period"', 7); y -= 16
 
     _txt(c, 36, y, "Your new charges and credits", 10, bold=True); y -= 16
     header(y, "Spend Categories"); y -= 18
     _txt(c, 36, y, "Card number 4505 XXXX XXXX 0042"); y -= 14
-    charges = [(date(2026, 5, 19), "May 19", "May 20", "COINAMATIC A ON", "Personal and Household Expenses", "10.25"),
-               (date(2026, 5, 23), "May 23", "May 25", "Amazon.ca*SAMPLE1 866-216-1072 ON", "Home and Office Improvement", "57.11"),
-               (date(2026, 5, 23), "May 23", "May 25", "AMZN Mktp CA*SAMPLE2 866-216-1072 ON", "Personal and Household Expenses", "24.85"),
-               (date(2026, 5, 29), "May 29", "Jun 01", "COINAMATIC A ON", "Personal and Household Expenses", "10.25")]
+    charges = [(date(2026, 5, 19), "May 19", "May 20", "MAPLE LEAF LAUNDRY TORONTO ON", "Personal and Household Expenses", "8.75"),
+               (date(2026, 5, 23), "May 23", "May 25", "NORTHWIND HOME*SAMPLE1 TORONTO ON", "Home and Office Improvement", "64.20"),
+               (date(2026, 5, 23), "May 23", "May 25", "CONTOSO MKTP CA*SAMPLE2 ON", "Personal and Household Expenses", "19.40"),
+               (date(2026, 5, 29), "May 29", "Jun 01", "MAPLE LEAF LAUNDRY TORONTO ON", "Personal and Household Expenses", "8.75")]
     for _, d1, d2, desc, cat, amt in charges:
         row(y, d1, d2, desc, amt, cat); y -= 13
-    _txt(c, 36, y, "Total for 4505 XXXX XXXX 0042 $102.46", bold=True); y -= 30
+    _txt(c, 36, y, "Total for 4505 XXXX XXXX 0042 $101.10", bold=True); y -= 30
 
     # Fine print in two columns; its sentences contain heading words.
     for left, right in [
@@ -498,17 +498,17 @@ def cibc_visa_2026_pdf():
                      (460, "Difference ($)"), (530, "Transactions"), (580, "Amount ($)")):
         _txt(c, x, y, label, 7, bold=True)
     y -= 14
-    for cat, n, amt, ytd_n, ytd in [("Personal and Household Expenses", "3", "45.35", "10", "117.10"),
-                                    ("Retail and Grocery", "0", "0.00", "8", "436.67"),
-                                    ("Home and Office Improvement", "1", "57.11", "1", "57.11")]:
+    for cat, n, amt, ytd_n, ytd in [("Personal and Household Expenses", "3", "36.90", "9", "142.30"),
+                                    ("Retail and Grocery", "0", "0.00", "6", "301.15"),
+                                    ("Home and Office Improvement", "1", "64.20", "2", "88.60")]:
         _txt(c, 96, y, cat, 7); _txt(c, 260, y, n, 7); _txt(c, 360, y, amt, 7, right=True)
         _txt(c, 410, y, "-", 7); _txt(c, 470, y, "-", 7); _txt(c, 540, y, ytd_n, 7); _txt(c, 600, y, ytd, 7, right=True)
         y -= 14
-    _txt(c, 96, y, "Total 4 102.46 34 $1,008.64", 7, bold=True); y -= 20
-    _txt(c, 72, y, "Reminder: If you only make the minimum payment every month, it will take approximately 27 year(s)", 7)
+    _txt(c, 96, y, "Total 4 101.10 21 $812.45", 7, bold=True); y -= 20
+    _txt(c, 72, y, "Reminder: If you only make the minimum payment every month, it will take approximately 19 year(s)", 7)
 
     expected = [(d, D(a)) for d, _, _, a in payments] + \
-        [(date(2026, 6, 15), D("-51.05")), (date(2026, 6, 15), D("-2.94")), (date(2026, 6, 13), D("0.18"))] + \
+        [(date(2026, 6, 15), D("-38.12")), (date(2026, 6, 15), D("-4.40")), (date(2026, 6, 13), D("0.27"))] + \
         [(d, -D(a)) for d, _, _, _, _, a in charges]
     return Statement("cibc-visa-2026.pdf", "pdf", "CIBC Visa (2026 layout)",
                      "interest table with rate column and out-of-line reversal, card-number line under header, "
@@ -528,37 +528,37 @@ def scotia_value_visa_pdf():
     _txt(c, 378, 750, "Account# 4535 XXXX XXXX 0099", 7)
     _txt(c, 72, 710, "Scotiabank Value VISA* card", 10, bold=True)
     _txt(c, 378, 560, "Payment Due Date Aug 5, 2026", 8)
-    _txt(c, 378, 547, "New Balance = $4,945.94", 8)
-    _txt(c, 378, 510, "Previous balance,Jun 11/26 $5,011.36", 7)
+    _txt(c, 378, 547, "New Balance = $2,318.27", 8)
+    _txt(c, 378, 510, "Previous balance,Jun 11/26 $2,402.60", 7)
     _txt(c, 378, 498, "Payments/credits - $200.00", 7)
-    _txt(c, 378, 486, "Purchases/charges + $77.89", 7)
+    _txt(c, 378, 486, "Purchases/charges + $61.40", 7)
     _txt(c, 71, 448, "Transactions since your last statement", 8, bold=True)
     y = 434
     _txt(c, 103, y, "TRANS. POST", 7, bold=True); y -= 8
     _txt(c, 82, y, "REF.# DATE", 7, bold=True)          # one phrase: the gap is a single space
     _txt(c, 133, y, "DATE", 7, bold=True); _txt(c, 163, y, "DETAILS", 7, bold=True)
     _txt(c, 364, y, "AMOUNT($)", 7, bold=True, right=True)
-    _txt(c, 379, y, "Account Balance", 8); _txt(c, 498, y, "=", 8); _txt(c, 572, y, "$4,945.94", 8, right=True)
+    _txt(c, 379, y, "Account Balance", 8); _txt(c, 498, y, "=", 8); _txt(c, 572, y, "$2,318.27", 8, right=True)
     y -= 15
     _txt(c, 71, y, "MR ALEX SAMPLE - 4535 XXXX XXXX 0099", 7); y -= 11
     rows = [
-        ("001", "Jun 11", "Jun 12", "UPG*PAYMENTICO.COM LIMASSOL", "30.03", "AMT 20.99 USD", date(2026, 6, 11), D("-30.03")),
+        ("001", "Jun 11", "Jun 12", "FABRIKAM*STREAMING DUBLIN", "26.41", "AMT 18.99 USD", date(2026, 6, 11), D("-26.41")),
         ("002", "Jun 12", "Jun 12", "PAYMENT FROM - *****04*0001", "100.00-", None, date(2026, 6, 12), D("100.00")),
         ("003", "Jun 12", "Jun 12", "PAYMENT FROM - *****04*0001", "100.00-", None, date(2026, 6, 12), D("100.00")),
-        ("004", "Jul 8", "Jul 9", "JOHN'S MART TORONTO ON", "17.83", None, date(2026, 7, 8), D("-17.83")),
-        ("005", "Jul 11", "Jul 11", "INTEREST CHARGES-PURCHASE", "42.69", None, date(2026, 7, 11), D("-42.69")),
-        ("006", "Jul 11", "Jul 11", "INTEREST CHARGES-CASH", "14.00", None, date(2026, 7, 11), D("-14.00")),
+        ("004", "Jul 8", "Jul 9", "CORNER GROCER TORONTO ON", "34.99", None, date(2026, 7, 8), D("-34.99")),
+        ("005", "Jul 11", "Jul 11", "INTEREST CHARGES-PURCHASE", "21.36", None, date(2026, 7, 11), D("-21.36")),
+        ("006", "Jul 11", "Jul 11", "INTEREST CHARGES-CASH", "6.05", None, date(2026, 7, 11), D("-6.05")),
     ]
     for i, (ref, d1, d2, desc, amt, note, _, _) in enumerate(rows):
         _txt(c, 82, y, ref, 7); _txt(c, 98, y, d1, 7); _txt(c, 133, y, d2, 7); _txt(c, 163, y, desc, 7)
         _txt(c, 364, y, amt, 7, right=True)
         if i == 1:
-            _txt(c, 378, y, "Creditlimit $5,000.00", 7)   # summary box on the same line
+            _txt(c, 378, y, "Creditlimit $3,000.00", 7)   # summary box on the same line
         y -= 9
         if note:
             _txt(c, 162, y, note, 7); y -= 9
     _txt(c, 82, y, "SUB-TOTAL CREDITS-4535 XXXX XXXX 0099", 7); _txt(c, 367, y, "$200.00-", 7, right=True); y -= 9
-    _txt(c, 82, y, "SUB-TOTAL DEBITS-4535 XXXX XXXX 0099", 7); _txt(c, 364, y, "$104.55", 7, right=True)
+    _txt(c, 82, y, "SUB-TOTAL DEBITS-4535 XXXX XXXX 0099", 7); _txt(c, 364, y, "$88.81", 7, right=True)
     _txt(c, 378, y, "Estimateofthetimeitwilltaketopaythe", 7)
     c.showPage()
     y = 700
