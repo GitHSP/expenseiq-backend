@@ -46,6 +46,25 @@ class AccountDetectionTests(TestCase):
         second = Account.objects.create(user=user, name="TD Savings-ish", kind="chequing", institution="TD", last4="9999")
         self.assertIsNone(match_existing_account([td, second], guess))     # ambiguous: let the user pick
 
+    def test_bank_named_only_in_a_transaction_is_not_the_account(self):
+        # Simplii's logo is an image; the first bank named in the text is a
+        # Wealthsimple e-transfer, and "Simplii" only appears in the footer.
+        header = ("your no fee chequing account statement period: July 30, 2026 - August 30, 2026 "
+                  "account number: 0110001234 details trans. eff. transaction funds out funds in "
+                  "Aug 3 E-TRANSFER 011700000001 500.00 Sample Wealthsimple Aug 9 PAYROLL 1,000.00 "
+                  "please refer to the Simplii Financial Products and Services guide. "
+                  "SIMPLII FINANCIAL DESIGNS are trademarks of CIBC.")
+        rows = [{"description": "E-TRANSFER 011700000001 Sample Wealthsimple"}, {"description": "PAYROLL"}]
+        guess = guess_account("eStatement_2026_08.pdf", {"header_text": header}, rows)
+        self.assertEqual((guess["institution"], guess["kind"], guess["last4"]), ("Simplii", "chequing", "1234"))
+
+    def test_card_number_in_a_transaction_is_not_the_account_number(self):
+        header = ("CIBC Account Statement For Sep 1 to Sep 30, 2026 Account number 72-40042 "
+                  "Sep 12 INTERNET TRANSFER 90.00 1,253.63 TO CARD 4505********0099 INTERNET BANKING")
+        rows = [{"description": "INTERNET TRANSFER TO CARD 4505********0099"}]
+        guess = guess_account("Account Statement cibc sep 26.pdf", {"header_text": header}, rows)
+        self.assertEqual((guess["institution"], guess["kind"], guess["last4"]), ("CIBC", "chequing", "0042"))
+
     def test_csv_falls_back_to_the_file_name(self):
         guess = guess_account("Scotia_Momentum_Visa_2026-05.csv", {"header_text": ""})
         self.assertEqual((guess["institution"], guess["kind"]), ("Scotiabank", "credit_card"))

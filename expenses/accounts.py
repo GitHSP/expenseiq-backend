@@ -66,26 +66,40 @@ LAST4_PATTERNS = [
 KIND_LABEL = {"chequing": "Chequing", "savings": "Savings", "credit_card": "Card", "other": "Account"}
 
 
-def _last4(text):
+def _last4(text, descriptions=""):
+    """Last 4 digits of the account number printed earliest on the page —
+    not a card number in a transaction ("TO CARD 4505********8138")."""
+    found = []
     for pattern in LAST4_PATTERNS:
-        m = pattern.search(text)
-        if m:
+        for m in pattern.finditer(text):
             digits = re.sub(r"\D", "", m.group(1))
-            if len(digits) >= 4:
-                return digits[-4:]
-    return ""
+            if len(digits) >= 4 and m.group(0).strip() not in descriptions:
+                found.append((m.start(), digits[-4:]))
+                break
+    return min(found)[1] if found else ""
 
 
-def guess_account(filename, info):
-    """{"institution", "kind", "last4", "name"} for a parsed statement."""
+def guess_account(filename, info, rows=()):
+    """{"institution", "kind", "last4", "name"} for a parsed statement.
+    `rows` (its transactions) keep bank names in transactions — an
+    e-transfer from Wealthsimple on a Simplii statement — from counting."""
     header = info.get("header_text") or ""
     stem = re.sub(r"\.[a-z0-9]+$", "", filename or "", flags=re.I)
     hay = f"{header} {stem.replace('_', ' ').replace('-', ' ')}"
+    descriptions = " | ".join(str(r.get("description", "")) for r in rows)
 
     # The bank named first on the page is the letterhead; others turn up in
     # transactions ("PAYMENT CIBC VISA" on a TD statement).
-    found = [(m.start(), i, name) for i, (name, pattern) in enumerate(INSTITUTIONS)
-             for m in [re.search(pattern, hay, re.I)] if m]
+    # A bank named more often on the page than in the transactions is the
+    # statement's own (letterhead, footer); the rest are just payees.
+    found = []
+    for i, (name, pattern) in enumerate(INSTITUTIONS):
+        hits = list(re.finditer(pattern, hay, re.I))
+        if hits and len(hits) > len(re.findall(pattern, descriptions, re.I)):
+            found.append((hits[0].start(), i, name))
+    if not found:
+        found = [(m.start(), i, name) for i, (name, pattern) in enumerate(INSTITUTIONS)
+                 for m in [re.search(pattern, hay, re.I)] if m]
     institution = min(found)[2] if found else ""
     top = header[:TOP]
     if CARD_WORDS.search(header) or NETWORK_TOP.search(top) or re.search(r"visa|mastercard|amex|credit ?card", stem, re.I):
@@ -96,7 +110,7 @@ def guess_account(filename, info):
         kind = "chequing"
     else:
         kind = "other"
-    last4 = _last4(header)
+    last4 = _last4(header, descriptions)
 
     if kind == "credit_card":
         network = next((n for n, p in NETWORKS if re.search(p, f"{top} {stem}", re.I)), "Card")

@@ -130,7 +130,7 @@ class StatementPreviewView(APIView):
             user=request.user, file_hash__in=[f["hash"] for f in files]).select_related("account")}
         file_info = []
         for f in files:
-            guess = guess_account(f["filename"], f["info"])
+            guess = guess_account(f["filename"], f["info"], f["rows"])
             existing = match_existing_account(accounts, guess)
             start, end = statement_period(f["info"], f["rows"])
             before = uploaded.get(f["hash"])
