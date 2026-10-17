@@ -584,3 +584,33 @@ class PdfSummaryLinesTests(TestCase):
         ]])
         rows, _ = parse_statement("visa.pdf", pdf)
         self.assertEqual([r["description"] for r in rows], ["TOTAL WINE & MORE", "PRESTO"])
+
+
+class MixedUploadTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="mix@example.test", username="mix", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_bad_file_is_skipped_and_the_rest_previewed(self):
+        res = self.client.post("/api/statements/preview/", {"files": [
+            SimpleUploadedFile("good.csv", SCOTIA_CSV.encode()),
+            SimpleUploadedFile("scan.pdf", make_pdf([[]])),
+        ]}, format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([f["filename"] for f in res.data["files"]], ["good.csv"])
+        self.assertEqual(res.data["skipped"][0]["filename"], "scan.pdf")
+        self.assertIn("scanned", res.data["skipped"][0]["error"])
+        self.assertEqual(len(res.data["rows"]), 2)
+
+    def test_all_bad_files_is_an_error(self):
+        res = self.client.post("/api/statements/preview/", {"files": [
+            SimpleUploadedFile("x.csv", b"hello,world\n")]}, format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("error", res.data)
+
+
+class FriendlyErrorTests(TestCase):
+    def test_non_statement_text_file(self):
+        with self.assertRaisesRegex(StatementError, "doesn't look like a bank statement"):
+            parse_statement("notes.txt", b"just some notes, not a statement")

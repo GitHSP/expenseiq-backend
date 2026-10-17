@@ -288,7 +288,13 @@ def parse_statement(filename, raw):
     if name.endswith((".ofx", ".qfx")) or "<OFX>" in text[:5000].upper():
         rows, info = parse_ofx(text)
     elif name.endswith((".csv", ".txt")) or "," in text[:2000]:
-        rows, info = parse_csv(text)
+        try:
+            rows, info = parse_csv(text)
+        except StatementError:
+            if name.endswith(".csv"):
+                raise
+            # Not a .csv and not readable as one: probably not a statement.
+            raise StatementError("This doesn't look like a bank statement. Upload the PDF, CSV, OFX or QFX file from your bank.")
     else:
         raise StatementError("Please upload a PDF, CSV, OFX or QFX file.")
 
