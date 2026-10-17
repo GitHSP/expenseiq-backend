@@ -55,6 +55,14 @@ class ChecklistItemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'completed_at', 'recurring_item']
 
+    def validate_linked_debt(self, debt):
+        # Ticking an item pays down its linked debt, so it must be the
+        # caller's own debt — never someone else's, even if they guess its id.
+        request = self.context.get("request")
+        if debt is not None and (request is None or debt.user_id != request.user.id):
+            raise serializers.ValidationError("Debt not found.")
+        return debt
+
 
 class RecurringItemSerializer(serializers.ModelSerializer):
     class Meta:

@@ -18,6 +18,14 @@ class RegisterSerializer(serializers.ModelSerializer):
         model  = User
         fields = ['email', 'username', 'password', 'password2']
 
+    def validate_email(self, value):
+        # Emails are case-insensitive: "Sarath@x.com" and "sarath@x.com" are
+        # the same person, so store them lowercased and refuse near-duplicates.
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value
+
     def validate(self, data):
         # Check passwords match
         if data['password'] != data['password2']:

@@ -150,15 +150,44 @@ REST_FRAMEWORK = {
         'anon': '20/minute',
         'user': '120/minute',
     },
+    # Requests reach Django through one proxy (PythonAnywhere's), which adds
+    # the real client address to X-Forwarded-For. Trusting only that last
+    # entry stops clients spoofing the header to dodge rate limits.
+    'NUM_PROXIES': int(os.environ.get('TRUSTED_PROXY_COUNT', '1')),
+}
+
+# Rate limits and login lockouts are kept in the database so they're shared
+# by every worker process and survive restarts.
+# One-time setup on a new server: python manage.py createcachetable
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'django_cache',
+    }
 }
 
 # ── JWT Settings ──────────────────────────────
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME':  timedelta(days=1),
+    # Short-lived access tokens: the app refreshes them automatically, and a
+    # leaked one is only useful for a few minutes.
+    'ACCESS_TOKEN_LIFETIME':  timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS':  True,
     'BLACKLIST_AFTER_ROTATION': True,
 }
+
+# ── HTTPS hardening (production) ──────────────
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    # Turn on PythonAnywhere's "Force HTTPS" (Web tab) for the HTTP->HTTPS
+    # redirect; doing it here as well can loop behind their proxy.
+    # HSTS covers only this host: pythonanywhere.com's other subdomains aren't
+    # ours, so includeSubDomains/preload (W005/W021) don't apply.
+    SILENCED_SYSTEM_CHECKS = ['security.W008', 'security.W005', 'security.W021']
 
 # ── Email Settings ────────────────────────────
 # Development — prints emails to terminal
