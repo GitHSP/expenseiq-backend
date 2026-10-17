@@ -289,7 +289,7 @@ class TransferMatchingTests(TestCase):
         self.assertEqual(Expense.objects.get().notes, "Imported from cibc.csv")
 
     def test_too_many_files(self):
-        res = self.preview(*[(f"{i}.csv", SCOTIA_CSV) for i in range(11)])
+        res = self.preview(*[(f"{i}.csv", SCOTIA_CSV) for i in range(51)])
         self.assertEqual(res.status_code, 400)
 
 

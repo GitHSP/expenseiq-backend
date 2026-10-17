@@ -66,7 +66,8 @@ class IncomeDetailView(generics.RetrieveUpdateDestroyAPIView):
 logger = logging.getLogger(__name__)
 
 MAX_STATEMENT_BYTES = 5 * 1024 * 1024
-MAX_STATEMENT_FILES = 10
+MAX_STATEMENT_FILES = 50                     # e.g. 6 months × 7 accounts in one go
+MAX_UPLOAD_TOTAL_BYTES = 60 * 1024 * 1024    # keeps the small server's memory/disk safe
 
 
 class StatementPreviewView(APIView):
@@ -84,6 +85,9 @@ class StatementPreviewView(APIView):
             return Response({"error": "Choose a statement file to upload."}, status=status.HTTP_400_BAD_REQUEST)
         if len(uploads) > MAX_STATEMENT_FILES:
             return Response({"error": f"Upload at most {MAX_STATEMENT_FILES} statements at a time."}, status=status.HTTP_400_BAD_REQUEST)
+        if sum(u.size for u in uploads) > MAX_UPLOAD_TOTAL_BYTES:
+            return Response({"error": "These files add up to more than 60 MB — please upload them in two batches."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # One unreadable file shouldn't block the others: it's reported in
         # `skipped` and the rest are previewed.

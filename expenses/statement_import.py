@@ -16,7 +16,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-MAX_ROWS = 2000
+MAX_ROWS = 5000
 
 
 class StatementError(ValueError):
