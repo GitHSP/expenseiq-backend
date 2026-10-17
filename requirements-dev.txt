@@ -1,0 +1,2 @@
+# Development-only tools (not needed on the server)
+reportlab>=4.0  # generates realistic test statements in tools/statement_qa

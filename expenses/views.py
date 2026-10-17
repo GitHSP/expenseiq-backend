@@ -1,3 +1,4 @@
+import logging
 from decimal                    import Decimal
 
 from django.db                  import transaction
@@ -62,6 +63,8 @@ class IncomeDetailView(generics.RetrieveUpdateDestroyAPIView):
 #   commit  — save the rows the user confirmed
 # ─────────────────────────────────────────────
 
+logger = logging.getLogger(__name__)
+
 MAX_STATEMENT_BYTES = 5 * 1024 * 1024
 MAX_STATEMENT_FILES = 10
 
@@ -82,16 +85,28 @@ class StatementPreviewView(APIView):
         if len(uploads) > MAX_STATEMENT_FILES:
             return Response({"error": f"Upload at most {MAX_STATEMENT_FILES} statements at a time."}, status=status.HTTP_400_BAD_REQUEST)
 
-        files, total_rows = [], 0
+        # One unreadable file shouldn't block the others: it's reported in
+        # `skipped` and the rest are previewed.
+        files, skipped, total_rows = [], [], 0
         for upload in uploads:
             if upload.size > MAX_STATEMENT_BYTES:
-                return Response({"error": f"{upload.name} is too large (5 MB max per file)."}, status=status.HTTP_400_BAD_REQUEST)
+                skipped.append({"filename": upload.name, "error": "Too large (5 MB max per file)."})
+                continue
             try:
                 rows, info = parse_statement(upload.name, upload.read())
             except StatementError as e:
-                return Response({"error": f"{upload.name}: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+                skipped.append({"filename": upload.name, "error": str(e)})
+                continue
+            except Exception:
+                logger.exception("Statement parse failed for %s", upload.name)
+                skipped.append({"filename": upload.name, "error": "Something went wrong reading this file. Please try its CSV version."})
+                continue
             total_rows += len(rows)
             files.append({"filename": upload.name, "rows": rows, "info": info, "flip": suggest_flip(rows, info)})
+
+        if not files:
+            message = skipped[0]["error"] if len(skipped) == 1 else "None of these files could be read."
+            return Response({"error": message, "skipped": skipped}, status=status.HTTP_400_BAD_REQUEST)
 
         if total_rows > MAX_ROWS:
             return Response({"error": f"These files have {total_rows} transactions — please import at most {MAX_ROWS} at a time."},
@@ -104,6 +119,7 @@ class StatementPreviewView(APIView):
                 for f in files
             ],
             "rows": match_checklist(request.user, build_preview(request.user, files), files),
+            "skipped": skipped,
         })
 
 
