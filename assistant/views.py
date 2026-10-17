@@ -91,7 +91,12 @@ class ChatView(APIView):
         last_user_message = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m["content"], str)), ""
         )
-        tool_ctx = {"last_user_message": last_user_message, "previewed": set()}
+        previous_assistant_message = next(
+            (m["content"] for m in reversed(messages[:-1]) if m["role"] == "assistant" and isinstance(m["content"], str)), ""
+        )
+        tool_ctx = {"last_user_message": last_user_message,
+                    "previous_assistant_message": previous_assistant_message, "previewed": set()}
+        failures = []   # changes a tool refused, so the reply can't claim them
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         system_prompt = SYSTEM_PROMPT.format(today=date.today().isoformat())
@@ -114,7 +119,13 @@ class ChatView(APIView):
                         block.text for block in response.content if block.type == "text"
                     ).strip()
                     if not actions and CLAIMS_CHANGE.search(reply_text):
-                        reply_text += "\n\n(Note: no changes were actually made to your data in this reply.)"
+                        # The model claimed a change that didn't happen. Don't
+                        # show that claim — say plainly what happened instead.
+                        reply_text = (
+                            "Nothing was changed. " + failures[-1]
+                            if failures else
+                            "Nothing was changed — I didn't complete that action. Please try again or use the app directly."
+                        )
                     return Response({"reply": reply_text, "actions": actions})
 
                 tool_results = []
@@ -133,6 +144,8 @@ class ChatView(APIView):
                             logger.exception("Assistant tool '%s' failed", block.name)
                             result = {"ok": False, "message": "Something went wrong running that action. Please try again."}
 
+                    if block.name in MUTATING_TOOLS and not result.get("ok"):
+                        failures.append(str(result.get("message", "")).replace("Not deleted: ", "").strip())
                     if block.name in MUTATING_TOOLS and result.get("ok") and not result.get("needs_confirmation"):
                         actions.append({
                             "tool": block.name,

@@ -280,10 +280,17 @@ def delete_transactions(user, date_from, date_to, kind="both", category=None,
             ) if total_count else f"There's nothing to delete between {start} and {end}.",
         }
 
-    if "delete_transactions" in ctx.get("previewed", set()):
-        return {"ok": False, "message": "Not deleted: show the user the preview and wait for them to confirm in their next message."}
+    # The user must have been shown this exact count in the previous reply
+    # and answered yes in their latest message. (Re-checking the numbers in
+    # the same reply is fine; approving it on the user's behalf isn't.)
     if not CONFIRM_WORDS.search(ctx.get("last_user_message", "")):
         return {"ok": False, "message": "Not deleted: the user hasn't confirmed. Ask them to confirm first."}
+    shown = ctx.get("previous_assistant_message", "")
+    if expected_count is None or not any(
+        re.search(rf"(?<!\d)(?<!\d,){re.escape(form)}(?!\d)(?!,\d)", shown)
+        for form in (str(int(expected_count)), f"{int(expected_count):,}")   # "1234" or "1,234"
+    ):
+        return {"ok": False, "message": "Not deleted: the user hasn't been shown this count yet. Show them the preview numbers and ask them to confirm."}
     if expected_count is None or int(expected_count) != total_count:
         return {"ok": False, "message": f"Not deleted: there are now {total_count} matching entries, not {expected_count}. Show the user the new numbers and ask again."}
 
