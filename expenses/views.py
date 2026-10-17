@@ -314,8 +314,16 @@ class StatementImportView(APIView):
                     user=user, name=spec["name"],
                     defaults={"kind": spec["kind"], "institution": spec["institution"], "last4": spec["last4"]},
                 )
-            # The same file again: its rows are already on record.
-            if plan["file_hash"] and Statement.objects.filter(user=user, file_hash=plan["file_hash"]).exists():
+            # The same file again: its rows are already on record, but take
+            # the period and account from this upload — they may have been
+            # read better this time (or the user picked another account).
+            earlier = Statement.objects.filter(user=user, file_hash=plan["file_hash"]).first() if plan["file_hash"] else None
+            if earlier:
+                earlier.period_start, earlier.period_end = plan["start"], plan["end"]
+                if earlier.account_id != account.id:
+                    earlier.account = account
+                    earlier.transactions.update(account=account)
+                earlier.save(update_fields=["period_start", "period_end", "account"])
                 continue
             statement = Statement.objects.create(
                 user=user, account=account, filename=plan["filename"], file_hash=plan["file_hash"],

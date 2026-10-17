@@ -220,6 +220,19 @@ class AccountsApiTests(TestCase):
         self.assertEqual(StatementTransaction.objects.count(), rows)
         self.assertEqual(Statement.objects.count(), 1)
 
+    def test_reuploading_a_file_updates_its_period_without_duplicating_rows(self):
+        data = self.preview("cibc-visa.pdf").data
+        self.import_from_preview(data)
+        st = Statement.objects.get()
+        st.period_start = st.period_end = date(2026, 10, 1)          # as if it had been misread
+        st.save()
+        rows = StatementTransaction.objects.count()
+        self.import_from_preview(self.preview("cibc-visa.pdf").data)
+        st.refresh_from_db()
+        self.assertEqual((st.period_start, st.period_end), (date(2026, 9, 15), date(2026, 10, 14)))
+        self.assertEqual(StatementTransaction.objects.count(), rows)
+        self.assertEqual(Statement.objects.count(), 1)
+
     def test_cannot_import_into_someone_elses_account(self):
         theirs = Account.objects.create(user=self.other, name="Their Visa", kind="credit_card")
         res = self.import_from_preview(self.preview("cibc-visa.pdf").data, account={"id": theirs.id})
@@ -287,8 +300,8 @@ class MergeAndMoveTests(TestCase):
         self.other = User.objects.create_user(email="mm2@example.test", username="mm2", password="x-Test-12345")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
-        self.simplii = Account.objects.create(user=self.user, name="Simplii Chequing •6701", kind="chequing")
-        self.wrong = Account.objects.create(user=self.user, name="Wealthsimple Chequing •6701", kind="chequing")
+        self.simplii = Account.objects.create(user=self.user, name="Simplii Chequing •0937", kind="chequing")
+        self.wrong = Account.objects.create(user=self.user, name="Wealthsimple Chequing •0937", kind="chequing")
         self.st = Statement.objects.create(user=self.user, account=self.wrong, filename="s.pdf",
                                            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31))
         tx(self.user, self.wrong, self.st, date(2026, 5, 3), "Rent", "-1000")

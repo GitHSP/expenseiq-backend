@@ -78,12 +78,16 @@ SKIP_DATED_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_HEADER_WORDS = 14     # longer lines are sentences in the fine print, not headings
+# Payment-slip wording: "NEW BALANCE  MINIMUM PAYMENT  PAYMENT DUE DATE  AMOUNT PAID"
+# looks like a heading but heads the tear-off slip, not transactions.
+SLIP_HEADER_RE = re.compile(r"new balance|minimum payment|payment due|amount paid|amount due", re.IGNORECASE)
 RATE_RE = re.compile(r"\s*\d{1,2}\.\d{1,3}\s*%")
 
 # An undated line starting with one of these closes the transaction table;
 # anything after it is ignored until the next table header.
 TABLE_END_RE = re.compile(
-    r"^(total|sub-?total|closing balance|new balance|statement balance|ending balance)\b",
+    r"^(total|sub-?total|closing balance|new balance|statement balance|ending balance)(?![a-z])|"
+    r"^(subtotal|newbalance|closingbalance)",
     re.IGNORECASE,
 )
 
@@ -108,6 +112,16 @@ NOTE_LINE_RE = re.compile(r"foreign currency|exchange rate|@\s*\d+\.\d+|conversi
 # A table titled like this lists money coming in (e.g. CIBC "Your payments").
 CREDIT_SECTION_RE = re.compile(r"payments|credits|refunds", re.IGNORECASE)
 DEBIT_SECTION_RE = re.compile(r"charges|purchases|debits", re.IGNORECASE)
+
+
+def _glue_tolerant(pattern):
+    """Same pattern, but a space may be missing ("Previousstatementbalance")."""
+    return re.compile(pattern.pattern.replace(" ", r"\s?"), pattern.flags)
+
+
+SKIP_LINE_RE = _glue_tolerant(SKIP_LINE_RE)
+SKIP_DATED_RE = _glue_tolerant(SKIP_DATED_RE)
+SLIP_HEADER_RE = _glue_tolerant(SLIP_HEADER_RE)
 
 
 class PdfStatementError(ValueError):
@@ -225,6 +239,7 @@ class Table:
         self.credit_section = credit_section
         self.interest = interest                    # rows are interest charged (CIBC "Your interest")
         self.right = max(c["x1"] for c in columns) + 12
+        self.left = min(c["x0"] for c in columns) - 12
         self.text_cols = [c for c in columns if c["kind"] not in MONEY_KINDS]
         self.money_cols = [c for c in columns if c["kind"] in MONEY_KINDS]
 
@@ -256,6 +271,9 @@ class Table:
             return None
         if "date" not in kinds:
             return None
+        money_right = max(c["x1"] for c in columns if c["kind"] in MONEY_KINDS) + 12
+        if SLIP_HEADER_RE.search(" ".join(w["text"] for w in line if w["x0"] <= money_right)):
+            return None
         # Summary boxes and reports (e.g. a spend-by-category chart) have no
         # date column, so a real header needs a money column and a date
         # column. Keep only the first date column (transaction date, not
@@ -279,6 +297,8 @@ class Table:
         for w in line:
             if w["x0"] > self.right:
                 continue  # beside the table (e.g. a summary box)
+            if w["x1"] < self.left:
+                continue  # printer marks in the margin (MBNA's "-IRH")
             if _is_money(w):
                 col = min(self.money_cols, key=lambda c: min(abs(w["x1"] - c["x1"]),
                                                              abs((w["x0"] + w["x1"]) / 2 - (c["x0"] + c["x1"]) / 2)))
@@ -357,11 +377,11 @@ def parse_pdf(raw, details=None):
         raise PdfStatementError("This PDF has no readable text (it's probably a scanned image). Please download a CSV instead.")
     end = _statement_end(all_text)
     if details is not None:
-        details["text"] = " ".join(w["text"] for page in pages[:2] for w in page)
+        details["text"] = " ".join(w["text"] for page in pages[:3] for w in page)
         details["end"] = end
 
     lines = [line for words in pages for line in _group_lines(words)]
-    if any(Table.from_header(line, "") for line in lines):
+    if any(_find_header(lines, i, "") for i in range(len(lines))):
         rows = _parse_tables(lines, end)
     else:
         rows = _parse_without_header(lines, end)
@@ -371,6 +391,54 @@ def parse_pdf(raw, details=None):
     return rows
 
 
+# Words that can make up the extra lines of a split heading.
+HEADING_WORD_RE = re.compile(
+    r"^(date|trans\.?|transaction|posting|post|activity|description|details|amount|\(\$\)|\$|ref\.?#?|"
+    r"balance|withdrawals?|deposits?|debits?|credits?|reference|number|no\.?)$",
+    re.IGNORECASE,
+)
+
+
+def _stacked_header(lines, i, section_title):
+    """A heading split over two or three lines, e.g. RBC's
+    "TRANSACTION  POSTING" / "ACTIVITY DESCRIPTION  AMOUNT ($)" / "DATE  DATE".
+    Words far to the right (a summary box beside the table) are left out."""
+    base = lines[i]
+    if any(_is_money(w) for w in base):
+        return None
+    right = max(w["x1"] for w in base) + 12
+    for picks in ((i - 1, i + 1), (i + 1,), (i - 1,)):
+        words = list(base)
+        for j in picks:
+            if not (0 <= j < len(lines) and abs(lines[j][0]["top"] - base[0]["top"]) <= 14):
+                continue
+            extra = [w for w in lines[j] if w["x0"] <= right]
+            # Only heading words ("TRANSACTION POSTING", "DATE DATE") — not
+            # e.g. "This month  Year-to-date" above a spend report.
+            if extra and all(HEADING_WORD_RE.match(w["text"]) for w in extra):
+                words += extra
+        if len(words) > len(base):
+            header = Table.from_header(sorted(words, key=lambda w: w["x0"]), section_title)
+            if header:
+                return header
+    return None
+
+
+def _looks_like_row(table, line, end):
+    """A dated line with an amount under the last table's columns: the table
+    goes on after a section total (MBNA lists payments, purchases and
+    interest as sections of one table, each with its own "Total")."""
+    cells, money = table.split(line)
+    if not cells.get("desc"):
+        return False        # (the amount may be on the next line — see `pending`)
+    d, _ = _leading_date(cells.get("date", ""), end) if cells.get("date") else (None, "")
+    return d is not None
+
+
+def _find_header(lines, i, section_title):
+    return Table.from_header(lines[i], section_title) or _stacked_header(lines, i, section_title)
+
+
 def _parse_tables(lines, end):
     rows = []
     table = None
@@ -378,10 +446,11 @@ def _parse_tables(lines, end):
     recent_titles = []      # plain lines seen since the last table ended
     prev_balance = None
     last_date = None
+    pending = None          # a dated line whose amount is on the next line
 
-    for line in lines:
+    for i, line in enumerate(lines):
         section_title = " | ".join(recent_titles[-2:])
-        header = Table.from_header(line, section_title)
+        header = _find_header(lines, i, section_title)
         if header:
             # A header can repeat on every page; keep reading the same table.
             table, in_table = header, True
@@ -391,6 +460,8 @@ def _parse_tables(lines, end):
             continue
 
         text = " ".join(w["text"] for w in line)
+        if not in_table and table is not None and _looks_like_row(table, line, end):
+            in_table = True
         if not in_table or table is None:
             # Between tables, remember headings like "Your payments" for the
             # next table, and pick up an opening balance.
@@ -414,10 +485,18 @@ def _parse_tables(lines, end):
         description = cells.get("desc", "")
         if "date" not in [c["kind"] for c in table.columns]:
             _, description = _leading_date(description, end)
+        # Text after the posting date belongs to the description (RBC's
+        # descriptions start left of their heading: "AUG 20 FABRIKAM*STREAMING...").
+        if cells.get("date2"):
+            _, spill = _leading_date(cells["date2"], end)
+            if spill and spill != cells["date2"]:
+                description = f"{spill} {description}".strip()
 
         # "Total ..." can start in the date column (CIBC: "Total for 4505 XXXX
-        # XXXX 0042 $101.10"), so check the whole line too.
-        if not d and (TABLE_END_RE.search(description or row_text) or TABLE_END_RE.search(text)):
+        # XXXX 0042 $101.10"), so check the whole width of the table too — but
+        # not a summary box beside it (RBC's "NEW BALANCE $..." next to the rows).
+        table_text = " ".join(w["text"] for w in line if table.left <= w["x1"] and w["x0"] <= table.right)
+        if not d and (TABLE_END_RE.search(description or row_text) or TABLE_END_RE.search(table_text)):
             balance = next((_parse_money(w["text"]) for k, w in money if k == "balance"), None)
             if balance is not None:
                 prev_balance = balance
@@ -435,6 +514,14 @@ def _parse_tables(lines, end):
         if table.stray_used and not d:
             money = []                 # e.g. "AMT 20.99 USD" under a foreign purchase
         has_amount = any(k != "balance" for k, _ in money)
+        if not has_amount and d and description:
+            # MBNA foreign purchases: "08/12/26 08/13/26 WL*VUE*MICROSOFT ..."
+            # with "59.99 USD 0101 $85.10" on the line below.
+            pending = {"date": d, "description": description}
+            continue
+        if has_amount and not d and pending:
+            d, description = pending["date"], f'{pending["description"]} {description}'.strip()
+        pending = None
         if not has_amount:
             # A wrapped description line (or a note like a foreign-currency
             # rate) belongs to the transaction above it.

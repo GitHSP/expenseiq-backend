@@ -68,7 +68,7 @@ KIND_LABEL = {"chequing": "Chequing", "savings": "Savings", "credit_card": "Card
 
 def _last4(text, descriptions=""):
     """Last 4 digits of the account number printed earliest on the page —
-    not a card number in a transaction ("TO CARD 4505********8138")."""
+    not a card number in a transaction ("TO CARD 4505********0099")."""
     found = []
     for pattern in LAST4_PATTERNS:
         for m in pattern.finditer(text):
@@ -157,6 +157,8 @@ PERIOD_TEXT_RE = re.compile(rf"{_MON}\s+(\d{{1,2}})(?:,?\s+(20\d\d))?{_TO}{_MON}
 PERIOD_SHORT_RE = re.compile(rf"{_MON}\s*(\d{{1,2}})/(\d{{2}}){_TO}{_MON}\s*(\d{{1,2}})/(\d{{2}})", re.I)
 PERIOD_ISO_RE = re.compile(rf"(20\d\d)-(\d{{2}})-(\d{{2}}){_TO}(20\d\d)-(\d{{2}})-(\d{{2}})")
 PERIOD_NUM_RE = re.compile(rf"(\d{{1,2}})/(\d{{1,2}})/(20\d\d){_TO}(\d{{1,2}})/(\d{{1,2}})/(20\d\d)")
+# MBNA: "StatementPeriod:07/09/26to08/10/26" (two-digit years, spaces missing)
+PERIOD_NUM2_RE = re.compile(r"period:?\s*(\d{1,2})/(\d{1,2})/(\d{2})\s*(?:to|-)\s*(\d{1,2})/(\d{1,2})/(\d{2})\b", re.I)
 
 
 def _month(token):
@@ -191,6 +193,9 @@ def statement_period(info, rows):
     for m in PERIOD_NUM_RE.finditer(header):
         g = [int(x) for x in m.groups()]
         add(lambda: (date(g[2], g[0], g[1]), date(g[5], g[3], g[4])))
+    for m in PERIOD_NUM2_RE.finditer(header):
+        g = [int(x) for x in m.groups()]
+        add(lambda: (date(2000 + g[2], g[0], g[1]), date(2000 + g[5], g[3], g[4])))
     for start, end in candidates:
         # A real period contains (nearly) all its transactions and spans
         # at most a few months.

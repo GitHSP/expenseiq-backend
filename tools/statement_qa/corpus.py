@@ -572,7 +572,107 @@ def scotia_value_visa_pdf():
                      [(d, a) for *_, d, a in rows], _finish(c, buf))
 
 
+def rbc_card_pdf():
+    """RBC card layout (structure from real statements; every value made up):
+    the table heading split over three lines with a points/cash-back box
+    beside it, a summary box ("NEW BALANCE $...") beside the rows, reference
+    numbers and foreign-currency notes under rows, descriptions starting left
+    of their heading, and a payment slip whose heading looks like a table."""
+    c, buf = _new_canvas()
+    _txt(c, 59, 760, "RBC Cash Back Mastercard", 10, bold=True)
+    _txt(c, 59, 744, "ALEX SAMPLE 5415 90** **** 0011", 8)
+    _txt(c, 59, 732, "STATEMENT FROM AUG 20 TO SEP 21, 2026", 8)
+    _txt(c, 56, 700, "PREVIOUS ACCOUNT BALANCE $2,410.00", 8)
+    _txt(c, 390, 700, "CASH BACK SUMMARY", 8, bold=True)
+    y = 600
+    _txt(c, 58, y + 3.4, "TRANSACTION", 7); _txt(c, 105, y + 3.4, "POSTING", 7)
+    _txt(c, 390, y + 3.4, "Cash Back on Other Purchases $0.42", 7)
+    _txt(c, 178, y, "ACTIVITY DESCRIPTION", 7); _txt(c, 345, y, "AMOUNT ($)", 7, right=True)
+    _txt(c, 58, y - 3.4, "DATE", 7); _txt(c, 105, y - 3.4, "DATE", 7)
+    _txt(c, 390, y - 3.4, "New Cash Back Balance $3.10", 7)
+    y -= 14
+    box = iter(["Minimum payment $72.00", "Payment due date OCT 16, 2026", "Credit limit $3,000.00",
+                "Previous Account Balance $2,410.00", "Payments & credits -$200.00", "Purchases & debits $95.30",
+                "Interest $41.20", "NEW BALANCE $2,346.50"])
+    rows = [
+        (date(2026, 8, 19), "AUG 19", "AUG 20", "FABRIKAM*STREAMING DUBLIN IRL", "$21.37", "Foreign Currency - USD 14.99 Exchange rate - 1.425000", D("-21.37")),
+        (date(2026, 8, 22), "AUG 22", "AUG 24", "PAYMENT - THANK YOU / PAIEMENT - MERCI", "-$100.00", None, D("100.00")),
+        (date(2026, 9, 2), "SEP 02", "SEP 03", "CORNER GROCER TORONTO ON", "$48.18", None, D("-48.18")),
+        (date(2026, 9, 4), "SEP 04", "SEP 08", "MAPLE CAFE TORONTO ON", "$25.75", None, D("-25.75")),
+        (date(2026, 9, 16), "SEP 16", "SEP 16", "PAYMENT - THANK YOU / PAIEMENT - MERCI", "-$100.00", None, D("100.00")),
+        (date(2026, 9, 21), "SEP 21", "SEP 21", "PURCHASE INTEREST 20.99%", "$41.20", None, D("-41.20")),
+    ]
+    for _, d1, d2, desc, amt, note, _ in rows:
+        _txt(c, 58, y, d1, 7); _txt(c, 105, y, d2, 7); _txt(c, 140, y, desc, 7)   # starts left of the heading
+        _txt(c, 345, y, amt, 7, right=True)
+        _txt(c, 390, y, next(box, ""), 7)
+        y -= 9
+        _txt(c, 127, y, "70000000000000000000001", 7); y -= 9
+        if note:
+            _txt(c, 127, y, note, 7); y -= 9
+    _txt(c, 130, y - 4, "TOTAL ACCOUNT BALANCE $2,346.50", 7, bold=True)
+    y = 200
+    _txt(c, 94, y, "RBC ROYAL BANK NEW BALANCE MINIMUM PAYMENT PAYMENT DUE DATE AMOUNT PAID", 7, bold=True)
+    _txt(c, 94, y - 8, "CREDIT CARD PAYMENT CENTRE $2,346.50 $72.00 OCT 16, 2026 $", 7)
+    return Statement("rbc-card.pdf", "pdf", "RBC Mastercard",
+                     "three-line heading, summary box beside rows, reference/FX lines, payment-slip heading",
+                     [(d, a) for d, *_, a in rows], _finish(c, buf))
+
+
+def mbna_2026_pdf():
+    """MBNA's 2026 layout (structure from real statements; values made up):
+    words with the spaces missing, printer marks in the left margin, the
+    statement period on page 3, payments / purchases / interest as sections
+    of one table each ending in "Total", and foreign purchases whose amount
+    is on the line below."""
+    c, buf = _new_canvas()
+    _txt(c, 76, 700, "NewBalance(includinganyPaymentPlans) $512.40 AccountNumber:", 8)
+    _txt(c, 76, 686, "YourMinimumPayment $15.00 523441XXXXXX0077", 8)
+    _txt(c, 76, 600, "Previous StatementBalance $430.00", 8)
+    c.showPage()
+    _txt(c, 28, 700, "WhatistheminimumpaymentandthePaymentDueDate?Yourminimumpaymentandthe", 6.5)
+    c.showPage()
+    _txt(c, 61, 760, "ALEXSAMPLE YourCreditCardAccountStatement", 8)
+    _txt(c, 405, 740, "StatementPeriod:08/09/26to09/08/26", 8)
+    y = 600
+    _txt(c, 64, y + 5, "Trans Posting Promotional Reference", 7)
+    _txt(c, 12, y, "-50-20-20-", 6); _txt(c, 64, y, "Date", 7); _txt(c, 105, y, "Date", 7)
+    _txt(c, 150, y, "Description", 7); _txt(c, 380, y, "AIR", 7); _txt(c, 430, y, "Number", 7)
+    _txt(c, 560, y, "Amount($)", 7, right=True)
+    y -= 13
+    _txt(c, 64, y, "Previousstatementbalance $430.00", 7); y -= 13
+
+    def row(d1, d2, desc, ref, amt):
+        nonlocal y
+        _txt(c, 64, y, d1, 7); _txt(c, 105, y, d2, 7); _txt(c, 150, y, desc, 7)
+        if ref:
+            _txt(c, 430, y, ref, 7)
+        if amt:
+            _txt(c, 560, y, amt, 7, right=True)
+        y -= 11
+
+    _txt(c, 162, y, "PAYMENTS", 7); y -= 11
+    row("08/23/26", "08/25/26", "PAYMENT", "1001", "-$40.00")
+    _txt(c, 12, y, "-IRH", 6); _txt(c, 162, y, "Total -$40.00", 7); y -= 13   # margin mark before "Total"
+    _txt(c, 162, y, "PURCHASES", 7); y -= 11
+    row("08/12/26", "08/13/26", "NORTHWIND*SOFTWARE REDMOND WA", None, None)
+    _txt(c, 162, y, "59.99 USD 0101", 7); _txt(c, 560, y, "$85.10", 7, right=True); y -= 11
+    row("08/17/26", "08/18/26", "MAPLELEAFDINER TORONTO ON", "2202", "$22.40")
+    row("09/03/26", "09/03/26", "CONTOSOMKTP*ABC TORONTO ON", "3303", "$14.90")
+    _txt(c, 162, y, "Total $122.40", 7); y -= 13
+    _txt(c, 162, y, "INTERESTCHARGED", 7); y -= 11
+    row("09/08/26", "09/08/26", "INTERESTCHARGE", None, "$4.65")
+    _txt(c, 162, y, "Total $4.65", 7); y -= 13
+    _txt(c, 72, y, "SubtotalofActivity $87.05", 7); y -= 13
+    _txt(c, 64, y, "NewBalance $517.05", 7)
+    expected = [(date(2026, 8, 23), D("40.00")), (date(2026, 8, 12), D("-85.10")), (date(2026, 8, 17), D("-22.40")),
+                (date(2026, 9, 3), D("-14.90")), (date(2026, 9, 8), D("-4.65"))]
+    return Statement("mbna-2026.pdf", "pdf", "MBNA (2026 layout)",
+                     "glued words, margin marks, period on page 3, sectioned table with totals, amount on next line",
+                     expected, _finish(c, buf))
+
+
 def build():
     return [rbc_chequing_pdf(), td_chequing_pdf(), simplii_chequing_pdf(),
             cibc_visa_pdf(), scotia_visa_pdf(), mbna_pdf(), amex_pdf(),
-            cibc_visa_2026_pdf(), scotia_value_visa_pdf()] + csv_statements()
+            cibc_visa_2026_pdf(), scotia_value_visa_pdf(), rbc_card_pdf(), mbna_2026_pdf()] + csv_statements()
