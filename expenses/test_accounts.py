@@ -349,3 +349,99 @@ class MergeAndMoveTests(TestCase):
         self.assertEqual(self.client.post(f"/api/statements/accounts/{theirs.id}/merge/", {"into": self.simplii.id}, format="json").status_code, 404)
         self.assertEqual(self.client.patch(f"/api/statements/{self.st.id}/", {"account": theirs.id}, format="json").status_code, 404)
         self.assertEqual(Statement.objects.get().account_id, self.wrong.id)
+
+
+class CardDebtTests(TestCase):
+    """Card statements keep the matching Planner debt up to date."""
+
+    def setUp(self):
+        from financial_planner.models import Debt
+        self.user = get_user_model().objects.create_user(email="cd@example.test", username="cd", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.debt = Debt.objects.create(user=self.user, name="CIBC Visa", debt_type="credit_card",
+                                        current_balance=1000, annual_interest_rate="21.99", minimum_payment=10)
+        self.other = Debt.objects.create(user=self.user, name="RBC Master #2", debt_type="credit_card",
+                                         current_balance=500, annual_interest_rate="20.99", minimum_payment=10)
+
+    def import_card(self, previous, new, end, rows, minimum="70.00", due="2026-11-08", filename=None):
+        txs = [{"date": d, "description": desc, "title": desc, "amount": a, "kind": k} for d, desc, a, k in rows]
+        return self.client.post("/api/statements/import/", {"statements": [{
+            "filename": filename or f"cibc-{end}.pdf", "file_hash": f"h-{end}", "period_start": rows[0][0], "period_end": end,
+            "account": {"name": "CIBC Visa •1234", "kind": "credit_card", "institution": "CIBC", "last4": "1234"},
+            "summary": {"previous_balance": previous, "new_balance": new, "minimum_payment": minimum,
+                        "payment_due": due, "credit_limit": "3500.00"},
+            "transactions": txs,
+        }]}, format="json")
+
+    def test_statement_updates_the_matching_debt(self):
+        res = self.import_card("3494.00", "3170.48", "2026-10-14",
+                               [("2026-10-02", "PAYMENT THANK YOU", "500.00", "transfer"),
+                                ("2026-09-20", "AMAZON.CA", "-176.48", "skipped")])
+        self.assertEqual(res.status_code, 201, res.data)
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))
+        self.assertEqual((self.debt.minimum_payment, self.debt.credit_limit, self.debt.due_day), (Decimal("70.00"), Decimal("3500.00"), 8))
+        self.assertEqual(res.data["debts_updated"][0]["debt"], "CIBC Visa")
+        self.other.refresh_from_db()
+        self.assertEqual(self.other.current_balance, Decimal("500"))       # the RBC debt isn't touched
+        from activity.models import ActivityLog
+        log = ActivityLog.objects.filter(area="debt").latest("id")
+        self.assertIn("statement ending Oct 14, 2026", log.reason)
+
+    def test_an_older_statement_doesnt_overwrite_a_newer_balance(self):
+        self.import_card("3494.00", "3170.48", "2026-10-14", [("2026-10-02", "PAYMENT", "500.00", "transfer")])
+        self.import_card("3200.00", "3494.00", "2026-09-14", [("2026-09-02", "PAYMENT", "100.00", "transfer")])
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))
+
+    def test_card_history_and_payments_since(self):
+        self.import_card("3494.00", "3170.48", "2026-10-14",
+                         [("2026-10-02", "PAYMENT THANK YOU", "500.00", "transfer"),
+                          ("2026-09-20", "AMAZON.CA", "-112.45", "skipped"),
+                          ("2026-10-14", "PURCHASE INTEREST", "-64.03", "skipped")])
+        # A later chequing statement shows a payment to the card.
+        self.client.post("/api/statements/import/", {"statements": [{
+            "filename": "chq.pdf", "file_hash": "chq", "period_start": "2026-10-15", "period_end": "2026-10-31",
+            "account": {"name": "CIBC Chequing", "kind": "chequing", "institution": "CIBC"},
+            "transactions": [{"date": "2026-10-20", "description": "INTERNET TRANSFER TO CARD 4500********1234",
+                              "title": "Card payment", "amount": "-200.00", "kind": "transfer"},
+                             {"date": "2026-10-21", "description": "LOBLAWS", "title": "Loblaws", "amount": "-50.00", "kind": "skipped"}],
+        }]}, format="json")
+        card = next(a for a in self.client.get("/api/statements/accounts/").data["accounts"] if a["kind"] == "credit_card")
+        h = card["card"]["history"][0]
+        self.assertEqual((h["paid"], h["spent"], h["interest"]), ("500.00", "112.45", "64.03"))
+        self.assertEqual(card["card"]["paid_since"], "200.00")
+        self.assertEqual(card["card"]["estimated_balance"], "2970.48")
+        self.assertEqual(card["debt"]["name"], "CIBC Visa")
+
+    def test_relinking_to_another_debt_syncs_it(self):
+        self.import_card("3494.00", "3170.48", "2026-10-14", [("2026-10-02", "PAYMENT", "500.00", "transfer")])
+        account = Account.objects.get(user=self.user)
+        res = self.client.patch(f"/api/statements/accounts/{account.id}/", {"debt": self.other.id}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.other.refresh_from_db()
+        self.assertEqual(self.other.current_balance, Decimal("3170.48"))
+
+    def test_planner_interest_skips_cards_kept_up_to_date_by_statements(self):
+        from datetime import date as d
+        from financial_planner.services import _apply_monthly_interest
+        self.import_card("3494.00", "3170.48", d.today().isoformat(), [(d.today().isoformat(), "PAYMENT", "500.00", "transfer")])
+        _apply_monthly_interest(self.user, 1)
+        self.debt.refresh_from_db(); self.other.refresh_from_db()
+        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))       # unchanged
+        self.assertGreater(self.other.current_balance, Decimal("500"))         # estimated interest as before
+
+    def test_monthly_summary_leaves_out_transfers(self):
+        self.import_card("3494.00", "3170.48", "2026-10-14",
+                         [("2026-10-02", "PAYMENT THANK YOU", "500.00", "transfer"),
+                          ("2026-10-03", "AMAZON.CA", "-100.00", "skipped"),
+                          ("2026-10-05", "AMAZON.CA REFUND", "20.00", "skipped")])
+        self.client.post("/api/statements/import/", {"statements": [{
+            "filename": "chq.pdf", "file_hash": "chq2", "period_start": "2026-10-01", "period_end": "2026-10-31",
+            "account": {"name": "CIBC Chequing", "kind": "chequing", "institution": "CIBC"},
+            "transactions": [{"date": "2026-10-04", "description": "PAYROLL", "amount": "2000.00", "kind": "skipped"},
+                             {"date": "2026-10-06", "description": "TO CARD 1234", "amount": "-500.00", "kind": "transfer"}],
+        }]}, format="json")
+        data = self.client.get("/api/statements/summary/").data
+        self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00"}])

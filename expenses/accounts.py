@@ -406,3 +406,98 @@ def find_recurring(transactions, account_ends, category_of):
         })
     items.sort(key=lambda i: (i["status"] != "active", -(Decimal(i["monthly_amount"] or 0)), i["name"].lower()))
     return items
+
+
+# ─────────────────────────────────────────────
+# Statement summary (balances, minimum payment, due date)
+# ─────────────────────────────────────────────
+
+_AMT = r"(-?\$?\s?[\d,]+\.\d\d-?)"
+# First match wins. Spaces are optional because some PDFs drop them
+# ("YourNew Balance", "Previousstatementbalance").
+OPENING_RES = [re.compile(p + _AMT, re.I) for p in (
+    r"previous\s?(?:account\s?|statement\s?)?balance[^$]{0,30}?",
+    r"opening\s?balance[^$\d]{0,40}", r"balance\s?forward[^$\d]{0,30}", r"starting\s?balance[^$\d]{0,30}",
+)]
+CLOSING_RES = [re.compile(p + _AMT, re.I) for p in (
+    r"new\s?balance[^$\d]{0,30}", r"total\s?account\s?balance[^$\d]{0,20}", r"total\s?balance[^$\d]{0,20}",
+    r"closing\s?balance[^$]{0,40}?", r"ending\s?balance[^$]{0,30}?", r"account\s?balance\s?=\s?",
+)]
+MINIMUM_RES = [re.compile(p + _AMT, re.I) for p in (
+    r"total\s?minimum\s?payment[^$]{0,40}?",                    # CIBC "Total Minimum Payment due by Oct 13, 2026 = $"
+    r"minimum\s?(?:amount\s?)?(?:payment|due)\d?[^$\d]{0,25}",   # "Minimum Payment2 $66.61" (footnote 2)
+)]
+LIMIT_RE = re.compile(r"(?<!over )(?<!your )credit\s?limit[^$\d]{0,10}" + _AMT, re.I)   # not "amount over (your) credit limit $..."
+DUE_RES = [re.compile(p + rf"{_MON}\s?(\d{{1,2}}),?\s?(20\d\d)", re.I) for p in (
+    r"payment\s?due\s?date:?\s*", r"minimum\s?payment\s?due\s?by\s*", r"pay\s?this\s?amount\s?by\s*",
+)]
+
+
+def _amount(text):
+    t = text.replace(",", "").replace("$", "").replace(" ", "")
+    negative = t.startswith("-") or t.endswith("-")
+    value = Decimal(t.strip("-"))
+    return -value if negative else value
+
+
+def statement_summary(info, rows, kind):
+    """Balances and payment details printed on a statement, as far as they
+    can be found. For a card, a balance that the transactions don't add up
+    to is dropped rather than trusted."""
+    text = info.get("header_text") or ""
+    first = lambda patterns: next((_amount(m.group(1)) for p in patterns for m in [p.search(text)] if m), None)
+    previous, new = first(OPENING_RES), first(CLOSING_RES)
+    minimum, limit = first(MINIMUM_RES), first([LIMIT_RE])
+    due = None
+    m = next((m for p in DUE_RES for m in [p.search(text)] if m), None)
+    if m:
+        try:
+            due = date(int(m.group(3)), _month(m.group(1)), int(m.group(2)))
+        except (ValueError, KeyError):
+            pass
+    net = sum((r["amount"] for r in rows), Decimal("0"))       # + = money in to the holder
+    if previous is not None and new is not None:
+        expected = previous - net if kind == "credit_card" else previous + net
+        if expected != new:
+            previous = None            # mismatched: keep only the printed closing balance
+    if kind != "credit_card":
+        minimum = limit = due = None
+    return {"previous_balance": previous, "new_balance": new, "minimum_payment": minimum,
+            "payment_due": due, "credit_limit": limit}
+
+
+# ─────────────────────────────────────────────
+# Which Planner debt is this card?
+# ─────────────────────────────────────────────
+
+BANK_WORDS = {
+    "Scotiabank": ("scotia",), "American Express": ("amex", "american express"), "PC Financial": ("pc ",),
+    "Canadian Tire": ("triangle", "canadian tire"), "Rogers Bank": ("rogers",), "Capital One": ("capital one",),
+}
+NETWORK_WORDS = {"visa": ("visa",), "mastercard": ("master", " mc"), "amex": ("amex",)}
+
+
+def match_debt(account, debts):
+    """The user's debt that's most likely this card, or None if unclear."""
+    bank = BANK_WORDS.get(account.institution, (account.institution.lower(),)) if account.institution else ()
+    name = account.name.lower()
+    network = next((n for n, words in NETWORK_WORDS.items() if any(w.strip() in name for w in words)), None)
+    scored = []
+    for d in debts:
+        dn = f" {d.name.lower()} "
+        if not bank or not any(b in dn for b in bank):
+            continue
+        score = 1
+        if account.last4 and account.last4 in dn:
+            score += 3
+        if network and any(w in dn for w in NETWORK_WORDS[network]):
+            score += 2
+        elif network and any(w in dn for ws in NETWORK_WORDS.values() for w in ws):
+            score -= 2                  # names a different card network
+        scored.append((score, d))
+    if not scored:
+        return None
+    scored.sort(key=lambda s: -s[0])
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None
+    return scored[0][1] if scored[0][0] > 0 else None

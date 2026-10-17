@@ -89,6 +89,10 @@ class Account(models.Model):
     kind        = models.CharField(max_length=20, choices=KINDS, default='other')
     institution = models.CharField(max_length=50, blank=True, default='')
     last4       = models.CharField(max_length=4, blank=True, default='')
+    # A card's Planner debt, kept up to date from its newest statement.
+    debt        = models.ForeignKey('financial_planner.Debt', on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='statement_accounts')
+    debt_synced_through = models.DateField(null=True, blank=True)    # period end of the statement last applied
     created_at  = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -106,6 +110,12 @@ class Statement(models.Model):
     file_hash    = models.CharField(max_length=64, blank=True, default='', db_index=True)
     period_start = models.DateField()
     period_end   = models.DateField()
+    # Figures printed on the statement (credit cards mostly), when found.
+    previous_balance = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    new_balance      = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    minimum_payment  = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    payment_due      = models.DateField(null=True, blank=True)
+    credit_limit     = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     uploaded_at  = models.DateTimeField(auto_now_add=True)
 
     class Meta:

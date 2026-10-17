@@ -12,7 +12,8 @@ from rest_framework.response    import Response
 from rest_framework.views       import APIView
 
 from .models      import Account, Expense, Income, Statement, StatementTransaction
-from .accounts    import guess_account, match_existing_account, statement_period
+from .accounts    import guess_account, match_existing_account, statement_period, statement_summary
+from .card_debts  import sync_debt
 from .serializers import ExpenseSerializer, IncomeSerializer
 from .bulk        import MODELS as BULK_MODELS, bulk_delete
 from financial_planner.models   import ChecklistItem
@@ -133,6 +134,7 @@ class StatementPreviewView(APIView):
             guess = guess_account(f["filename"], f["info"], f["rows"])
             existing = match_existing_account(accounts, guess)
             start, end = statement_period(f["info"], f["rows"])
+            summary = statement_summary(f["info"], f["rows"], guess["kind"])
             before = uploaded.get(f["hash"])
             file_info.append({
                 "filename": f["filename"], "format": f["info"]["format"],
@@ -142,6 +144,8 @@ class StatementPreviewView(APIView):
                 "account_id": before.account_id if before else (existing.id if existing else None),
                 "account_guess": guess,
                 "already_uploaded": {"date": before.uploaded_at.date().isoformat(), "account": before.account.name} if before else None,
+                "summary": {k: (None if v is None else str(v) if not hasattr(v, "isoformat") else v.isoformat())
+                            for k, v in summary.items()},
             })
 
         return Response({
@@ -215,6 +219,9 @@ class StatementImportView(APIView):
             ):
                 toggle_checklist_item(item)
                 ticked += 1
+            # Last, so the statement's balance is what the card's debt ends up with.
+            debts_updated = [r for r in (sync_debt(a) for a in Account.objects.filter(
+                user=request.user, id__in=getattr(self, "touched_accounts", ()), kind="credit_card")) if r]
 
         expenses = sum(1 for s in serializers_to_save if isinstance(s, ExpenseSerializer))
         sources = sorted({source for _, source in entries} | {p["filename"] for p in plans}) or ["statement"]
@@ -238,6 +245,7 @@ class StatementImportView(APIView):
             "ticked_checklist":  ticked,
             "statements_saved":  statements_saved,
             "statements_updated": getattr(self, "resync_stats", {}).get("statements", 0),
+            "debts_updated":     debts_updated,
             "resync": getattr(self, "resync_stats", None),
         }, status=status.HTTP_201_CREATED)
 
@@ -303,7 +311,8 @@ class StatementImportView(APIView):
             except ValueError:
                 start, end = min(p["date"] for p in parsed), max(p["date"] for p in parsed)
             plans.append({"filename": filename, "file_hash": str(st.get("file_hash") or "")[:64],
-                          "account": account, "start": min(start, end), "end": max(start, end), "transactions": parsed})
+                          "account": account, "start": min(start, end), "end": max(start, end), "transactions": parsed,
+                          "summary": _summary_fields(st.get("summary"))})
         return plans, entries
 
     def _resync(self, statement, account, plan, saved):
@@ -312,7 +321,10 @@ class StatementImportView(APIView):
         income saved from them), rows it was missing added."""
         statement.period_start, statement.period_end = plan["start"], plan["end"]
         statement.account = account
-        statement.save(update_fields=["period_start", "period_end", "account"])
+        for field, value in plan["summary"].items():
+            setattr(statement, field, value)
+        statement.save(update_fields=["period_start", "period_end", "account", *plan["summary"]])
+        self.touched_accounts.add(account.id)
         old = {}
         for tx in statement.transactions.all():
             old.setdefault((tx.date, tx.amount, tx.description.lower()), []).append(tx)
@@ -353,6 +365,7 @@ class StatementImportView(APIView):
 
     def _save_statements(self, user, plans, saved):
         self.resync_stats = {"statements": 0, "rows_added": 0, "rows_removed": 0, "entries_removed": 0}
+        self.touched_accounts = set()
         count = 0
         for plan in plans:
             spec = plan["account"]
@@ -371,8 +384,9 @@ class StatementImportView(APIView):
                 continue
             statement = Statement.objects.create(
                 user=user, account=account, filename=plan["filename"], file_hash=plan["file_hash"],
-                period_start=plan["start"], period_end=plan["end"],
+                period_start=plan["start"], period_end=plan["end"], **plan["summary"],
             )
+            self.touched_accounts.add(account.id)
             count += 1
             # Overlapping statements (e.g. a PDF and a CSV export of the same
             # weeks) shouldn't list a transaction twice.
@@ -399,6 +413,28 @@ class StatementImportView(APIView):
                 ))
             StatementTransaction.objects.bulk_create(new)
         return count
+
+
+SUMMARY_MONEY = ("previous_balance", "new_balance", "minimum_payment", "credit_limit")
+
+
+def _summary_fields(summary):
+    """Statement figures sent back from the preview; anything unreadable is dropped."""
+    out = {}
+    if not isinstance(summary, dict):
+        return out
+    for field in SUMMARY_MONEY:
+        try:
+            value = Decimal(str(summary.get(field))).quantize(Decimal("0.01"))
+            if abs(value) < Decimal("10000000000"):
+                out[field] = value
+        except (ArithmeticError, ValueError, TypeError):
+            pass
+    try:
+        out["payment_due"] = date.fromisoformat(str(summary.get("payment_due")))
+    except ValueError:
+        pass
+    return out
 
 
 def _entry_serializer(row, source):

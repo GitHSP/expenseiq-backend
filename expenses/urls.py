@@ -14,6 +14,7 @@ urlpatterns = [
     path('statements/accounts/<int:pk>/', account_views.AccountDetailView.as_view(),       name='account-detail'),
     path('statements/accounts/<int:pk>/merge/', account_views.AccountMergeView.as_view(), name='account-merge'),
     path('statements/transactions/',      account_views.AccountTransactionsView.as_view(), name='account-transactions'),
+    path('statements/summary/',           account_views.MonthlySummaryView.as_view(),      name='monthly-summary'),
     path('statements/recurring/',         account_views.RecurringChargesView.as_view(),    name='recurring-charges'),
     path('statements/<int:pk>/',          account_views.StatementDetailView.as_view(),     name='statement-detail'),
 ]

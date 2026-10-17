@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 from activity.context import activity_context, log_activity
 
 from .accounts import coverage, find_recurring, missing_periods
+from .card_debts import card_history, payments_since, sync_debt
 from .models import Account, Expense, Income, Statement, StatementTransaction
 from .statement_import import EXPENSE_RULES, _match
 
@@ -41,7 +42,7 @@ class AccountListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        accounts = list(Account.objects.filter(user=request.user))
+        accounts = list(Account.objects.filter(user=request.user).select_related("debt"))
         statements = list(
             Statement.objects.filter(user=request.user)
             .annotate(
@@ -74,10 +75,59 @@ class AccountListView(APIView):
                 "statements": by_account.get(a.id, []),
                 "missing": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in missing_periods(
                     (s.period_start, s.period_end) for s in statements if s.account_id == a.id)],
+                "debt": {"id": a.debt.id, "name": a.debt.name, "current_balance": _money(a.debt.current_balance)} if a.debt else None,
+                "card": _card(a) if a.kind == "credit_card" else None,
                 "coverage": cov["accounts"].get(a.id, {}),
             } for a in accounts],
             "months": cov["months"],
         })
+
+
+def _card(account):
+    """A card's statement-by-statement history and what's been paid to it since."""
+    history = card_history(account)
+    last = next((h for h in reversed(history) if h["new_balance"] is not None), None)
+    since = payments_since(account, date.fromisoformat(last["period_end"])) if last else []
+    paid_since = sum((-t.amount for t in since), Decimal("0"))
+    return {
+        "history": history,
+        "statement_balance": last["new_balance"] if last else None,
+        "statement_end": last["period_end"] if last else None,
+        "minimum_payment": last["minimum_payment"] if last else None,
+        "payment_due": last["payment_due"] if last else None,
+        "credit_limit": last["credit_limit"] if last else None,
+        "paid_since": _money(paid_since),
+        "payments_since": [{"date": t.date.isoformat(), "amount": _money(-t.amount), "from": t.account.name,
+                            "title": t.title} for t in since],
+        # What's owed now, as far as the uploaded statements show: the last
+        # statement's balance less payments made since (new purchases since
+        # then only appear on the next statement).
+        "estimated_balance": _money(Decimal(last["new_balance"]) - paid_since) if last else None,
+    }
+
+
+class MonthlySummaryView(APIView):
+    """GET /api/statements/summary/ — income and spending per month across all
+    accounts, from the uploaded statements. Transfers between the user's own
+    accounts (incl. card payments) are left out; card refunds reduce spending."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        months = {}
+        rows = (StatementTransaction.objects.filter(user=request.user).exclude(kind="transfer")
+                .values_list("date", "amount", "account__kind"))
+        for d, amount, kind in rows:
+            m = months.setdefault(f"{d.year}-{d.month:02d}", {"income": Decimal("0"), "expenses": Decimal("0")})
+            if amount > 0 and kind != "credit_card":
+                m["income"] += amount
+            else:
+                m["expenses"] -= amount          # card refunds (positive) lower spending
+        out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"]),
+                "net": _money(v["income"] - v["expenses"])} for k, v in sorted(months.items())]
+        total_in = sum((Decimal(m["income"]) for m in out), Decimal("0"))
+        total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
+        return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),
+                         "total_net": _money(total_in - total_out)})
 
 
 class AccountDetailView(APIView):
@@ -105,8 +155,20 @@ class AccountDetailView(APIView):
             if kind not in dict(Account.KINDS):
                 return Response({"error": "Unknown account type."}, status=status.HTTP_400_BAD_REQUEST)
             account.kind = kind
+        relink = "debt" in request.data
+        if relink:
+            from financial_planner.models import Debt
+            debt_id = request.data.get("debt")
+            debt = Debt.objects.filter(user=request.user, pk=debt_id).first() if debt_id else None
+            if debt_id and not debt:
+                return Response({"error": "Debt not found."}, status=status.HTTP_404_NOT_FOUND)
+            if debt:      # a debt belongs to one card
+                Account.objects.filter(user=request.user, debt=debt).exclude(pk=pk).update(debt=None)
+            account.debt, account.debt_synced_through = debt, None
         account.save()
-        return Response({"id": account.id, "name": account.name, "kind": account.kind})
+        synced = sync_debt(account, force=True) if relink and account.debt else None
+        return Response({"id": account.id, "name": account.name, "kind": account.kind,
+                         "debt": account.debt_id, "debt_updated": synced})
 
     def delete(self, request, pk):
         account = self._get(request, pk)
