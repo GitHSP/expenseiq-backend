@@ -50,7 +50,8 @@ FULL_DATE_RES = [
 ]
 
 AMOUNT_RE = re.compile(
-    r"^\(?-?\$?\d{1,3}(?:,\d{3})*\.\d{2}\)?(?:CR|DR|OD|-)?$|^\(?-?\$?\d+\.\d{2}\)?(?:CR|DR|OD|-)?$",
+    # Optional trailing footnote stars: CIBC prints "INTEREST REVERSAL -0.18***".
+    r"^\(?-?\$?\d{1,3}(?:,\d{3})*\.\d{2}\)?(?:CR|DR|OD|-)?\**$|^\(?-?\$?\d+\.\d{2}\)?(?:CR|DR|OD|-)?\**$",
     re.IGNORECASE,
 )
 
@@ -67,6 +68,17 @@ SKIP_LINE_RE = re.compile(
     r"page \d|^\d+ of \d+$|statement period|statement date|account number",
     re.IGNORECASE,
 )
+
+# Summary wording that can sit on a dated line (e.g. "Sep 1 Opening balance").
+# Narrower than SKIP_LINE_RE: a dated row in a table is normally a real
+# transaction, e.g. CIBC's interest table lists "Jun 15 CASH ADVANCES 22.99% 2.94".
+SKIP_DATED_RE = re.compile(
+    r"opening balance|closing balance|balance forward|previous balance|new balance|"
+    r"statement balance|minimum payment|payment due",
+    re.IGNORECASE,
+)
+MAX_HEADER_WORDS = 14     # longer lines are sentences in the fine print, not headings
+RATE_RE = re.compile(r"\s*\d{1,2}\.\d{1,3}\s*%")
 
 # An undated line starting with one of these closes the transaction table;
 # anything after it is ignored until the next table header.
@@ -103,7 +115,7 @@ class PdfStatementError(ValueError):
 
 
 def _parse_money(token):
-    t = token.strip()
+    t = token.strip().rstrip("*")
     negative = False
     if t.startswith("(") and t.endswith(")"):
         negative, t = True, t[1:-1]
@@ -208,15 +220,18 @@ def _phrases(words):
 class Table:
     """Column layout of one transaction table, built from its header row."""
 
-    def __init__(self, columns, credit_section):
+    def __init__(self, columns, credit_section, interest=False):
         self.columns = columns                      # [{"kind", "x0", "x1"}] left to right
         self.credit_section = credit_section
+        self.interest = interest                    # rows are interest charged (CIBC "Your interest")
         self.right = max(c["x1"] for c in columns) + 12
         self.text_cols = [c for c in columns if c["kind"] not in MONEY_KINDS]
         self.money_cols = [c for c in columns if c["kind"] in MONEY_KINDS]
 
     @classmethod
     def from_header(cls, line, section_title):
+        if len(line) > MAX_HEADER_WORDS:
+            return None
         # A label immediately followed by an amount is a "label: value" pair
         # from a summary box sharing the row (e.g. "Payments -$500.00"), not a
         # column heading.
@@ -225,7 +240,10 @@ class Table:
         for i, p in enumerate(phrases):
             if p["money"]:
                 continue
-            if i + 1 < len(phrases) and phrases[i + 1]["money"]:
+            nxt = i + 1
+            while nxt < len(phrases) and phrases[nxt]["text"] in ("=", ":", "+", "-"):
+                nxt += 1                              # "Account Balance = $4,945.94"
+            if nxt < len(phrases) and phrases[nxt]["money"]:
                 continue
             heads.append(p)
         columns = []
@@ -236,11 +254,12 @@ class Table:
         kinds = [c["kind"] for c in columns]
         if not any(k in kinds for k in ("out", "in", "amount")):
             return None
-        if not ("date" in kinds or "desc" in kinds):
+        if "date" not in kinds:
             return None
-        # Summary boxes have no date/description headings, so a real header
-        # needs a money column plus a date or description column. Keep only
-        # the first date column (transaction date, not posting date).
+        # Summary boxes and reports (e.g. a spend-by-category chart) have no
+        # date column, so a real header needs a money column and a date
+        # column. Keep only the first date column (transaction date, not
+        # posting date).
         seen_date = False
         for c in columns:
             if c["kind"] == "date":
@@ -249,12 +268,14 @@ class Table:
                 seen_date = True
         credit = bool(section_title) and bool(CREDIT_SECTION_RE.search(section_title)) \
             and not DEBIT_SECTION_RE.search(section_title)
-        return cls(columns, credit)
+        interest = any(re.search(r"interest", p["text"], re.IGNORECASE) for p in heads)
+        return cls(columns, credit, interest)
 
     def split(self, line):
         """Return (cells, money) for a row: text per text column, and
         [(kind, word)] for amounts under money columns."""
-        cells, money = {}, []
+        cells, money, stray = {}, [], []
+        self.stray_used = False
         for w in line:
             if w["x0"] > self.right:
                 continue  # beside the table (e.g. a summary box)
@@ -264,6 +285,7 @@ class Table:
                 if min(abs(w["x1"] - col["x1"]), abs((w["x0"] + w["x1"]) / 2 - (col["x0"] + col["x1"]) / 2)) <= MONEY_TOLERANCE:
                     money.append((col["kind"], w))
                     continue
+                stray.append(w)
             # Text is left-aligned: it belongs to the last text column that
             # starts at or before it.
             col = None
@@ -271,7 +293,20 @@ class Table:
                 if c["x0"] <= w["x0"] + 6:
                     col = c
             kind = col["kind"] if col else "desc"
+            if w in stray:
+                continue
             cells[kind] = f'{cells.get(kind, "")} {w["text"]}'.strip()
+        # One amount printed out of line with its column (CIBC's
+        # "INTEREST REVERSAL -0.18***" sits under the rate column): if it's
+        # the row's only amount and right of the description, it's the amount.
+        if not money and len(stray) == 1 and self.text_cols and stray[0]["x0"] > max(c["x1"] for c in self.text_cols):
+            spendable = [c for c in self.money_cols if c["kind"] != "balance"] or self.money_cols
+            col = min(spendable, key=lambda c: abs(stray[0]["x1"] - c["x1"]))
+            money.append((col["kind"], stray[0]))
+            self.stray_used = True
+        else:
+            for w in stray:
+                cells["desc"] = f'{cells.get("desc", "")} {w["text"]}'.strip()
         return cells, money
 
     def amount(self, money, prev_balance):
@@ -351,6 +386,8 @@ def _parse_tables(lines, end):
             # A header can repeat on every page; keep reading the same table.
             table, in_table = header, True
             recent_titles = []
+            if rows:
+                rows[-1]["_open"] = 0      # lines under a new header aren't part of the last row
             continue
 
         text = " ".join(w["text"] for w in line)
@@ -368,20 +405,26 @@ def _parse_tables(lines, end):
         row_text = " ".join(v for k, v in cells.items() if k in ("date", "desc", "date2", "ref"))
         date_text = cells.get("date", "")
         d, _ = _leading_date(date_text, end) if date_text else (None, "")
+        if d is None and re.match(r"^\d{1,4}\s+\S", date_text):
+            # Scotia prints "REF.#" and "DATE" so close together they read
+            # as one heading: "001 Jun 11" is reference 001, dated Jun 11.
+            d, _ = _leading_date(re.sub(r"^\d{1,4}\s+", "", date_text), end)
         if d is None and "date" not in [c["kind"] for c in table.columns]:
             d, _ = _leading_date(row_text, end)
         description = cells.get("desc", "")
         if "date" not in [c["kind"] for c in table.columns]:
             _, description = _leading_date(description, end)
 
-        if not d and TABLE_END_RE.search(description or row_text):
+        # "Total ..." can start in the date column (CIBC: "Total for 4505 XXXX
+        # XXXX 8138 $102.46"), so check the whole line too.
+        if not d and (TABLE_END_RE.search(description or row_text) or TABLE_END_RE.search(text)):
             balance = next((_parse_money(w["text"]) for k, w in money if k == "balance"), None)
             if balance is not None:
                 prev_balance = balance
             in_table = False
             recent_titles = []
             continue
-        if SKIP_LINE_RE.search(description or row_text):
+        if (SKIP_DATED_RE if d else SKIP_LINE_RE).search(description or row_text):
             balance = next((_parse_money(w["text"]) for k, w in money if k == "balance"), None)
             if balance is None and money and re.search(r"balance", description or row_text, re.IGNORECASE):
                 balance = _parse_money(money[-1][1]["text"])
@@ -389,6 +432,8 @@ def _parse_tables(lines, end):
                 prev_balance = balance
             continue
 
+        if table.stray_used and not d:
+            money = []                 # e.g. "AMT 20.99 USD" under a foreign purchase
         has_amount = any(k != "balance" for k, _ in money)
         if not has_amount:
             # A wrapped description line (or a note like a foreign-currency
@@ -410,7 +455,10 @@ def _parse_tables(lines, end):
             prev_balance = balance
         if amount is None or amount == 0:
             continue
-        rows.append({"date": d, "description": description or row_text or "Transaction", "amount": amount, "_open": 2})
+        description = description or row_text or "Transaction"
+        if table.interest and amount < 0:
+            description = f"Interest charged - {RATE_RE.sub('', description).strip()}"
+        rows.append({"date": d, "description": description, "amount": amount, "_open": 2})
 
     for r in rows:
         r.pop("_open", None)
