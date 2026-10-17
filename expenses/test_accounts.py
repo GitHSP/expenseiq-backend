@@ -233,6 +233,29 @@ class AccountsApiTests(TestCase):
         self.assertEqual(StatementTransaction.objects.count(), rows)
         self.assertEqual(Statement.objects.count(), 1)
 
+    def test_reupload_replaces_rows_that_were_misread(self):
+        # As happened with RBC: the first upload read a payment-slip line as
+        # the only "transaction" and it was saved as income.
+        from .models import Income
+        data = self.preview("cibc-visa.pdf").data
+        self.import_from_preview(data)
+        st = Statement.objects.get()
+        good = StatementTransaction.objects.count()
+        fake_income = Income.objects.create(user=self.user, title="Credit Card Payment Centre", amount=45,
+                                            category="Other", date=date(2026, 11, 8), notes="Imported from cibc-visa.pdf")
+        StatementTransaction.objects.create(user=self.user, statement=st, account=st.account, date=date(2026, 11, 8),
+                                            description="CREDIT CARD PAYMENT CENTRE", title="Credit Card Payment Centre",
+                                            amount=45, kind="income", income=fake_income)
+        StatementTransaction.objects.filter(statement=st).order_by("id").first().delete()     # and one real row missing
+        res = self.import_from_preview(self.preview("cibc-visa.pdf").data)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["resync"]["rows_removed"], 1)
+        self.assertEqual(res.data["resync"]["rows_added"], 1)
+        self.assertEqual(res.data["resync"]["entries_removed"], 1)
+        self.assertFalse(Income.objects.filter(id=fake_income.id).exists())
+        self.assertEqual(StatementTransaction.objects.count(), good)
+        self.assertFalse(StatementTransaction.objects.filter(description="CREDIT CARD PAYMENT CENTRE").exists())
+
     def test_cannot_import_into_someone_elses_account(self):
         theirs = Account.objects.create(user=self.other, name="Their Visa", kind="credit_card")
         res = self.import_from_preview(self.preview("cibc-visa.pdf").data, account={"id": theirs.id})

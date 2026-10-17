@@ -228,6 +228,7 @@ class StatementImportView(APIView):
                 "expenses": expenses, "expense_total": str(totals["expense"]),
                 "income": len(serializers_to_save) - expenses, "income_total": str(totals["income"]),
                 "ticked": ticked, "statements": statements_saved,
+                "updated": getattr(self, "resync_stats", None),
             },
             source="import", reason="",
         )
@@ -236,6 +237,8 @@ class StatementImportView(APIView):
             "imported_income":   len(serializers_to_save) - expenses,
             "ticked_checklist":  ticked,
             "statements_saved":  statements_saved,
+            "statements_updated": getattr(self, "resync_stats", {}).get("statements", 0),
+            "resync": getattr(self, "resync_stats", None),
         }, status=status.HTTP_201_CREATED)
 
     # ── statements: check everything before saving anything ──
@@ -303,7 +306,53 @@ class StatementImportView(APIView):
                           "account": account, "start": min(start, end), "end": max(start, end), "transactions": parsed})
         return plans, entries
 
+    def _resync(self, statement, account, plan, saved):
+        """Make a re-uploaded statement match how it reads now: same period
+        and account, rows it doesn't contain removed (with any expense or
+        income saved from them), rows it was missing added."""
+        statement.period_start, statement.period_end = plan["start"], plan["end"]
+        statement.account = account
+        statement.save(update_fields=["period_start", "period_end", "account"])
+        old = {}
+        for tx in statement.transactions.all():
+            old.setdefault((tx.date, tx.amount, tx.description.lower()), []).append(tx)
+        keep, new = set(), []
+        for p in plan["transactions"]:
+            obj = saved[p["entry"]] if p["entry"] is not None else None
+            link = {"expense": obj} if p["kind"] == "expense" else {"income": obj} if p["kind"] == "income" else {}
+            match = old.get((p["date"], p["amount"], p["description"].lower()))
+            if match:
+                tx = match.pop(0)
+                if not match:
+                    old.pop((p["date"], p["amount"], p["description"].lower()))
+                keep.add(tx.id)
+                changes = {"account": account}
+                if obj is not None and not (tx.expense_id or tx.income_id):
+                    changes.update(link, kind=p["kind"])
+                for field, value in changes.items():
+                    setattr(tx, field, value)
+                tx.save(update_fields=list(changes))
+                continue
+            new.append(StatementTransaction(
+                user=statement.user, statement=statement, account=account, date=p["date"], amount=p["amount"],
+                description=p["description"], title=p["title"], category=p["category"], kind=p["kind"], **link,
+            ))
+        stale = list(statement.transactions.exclude(id__in=keep))     # before adding the new rows
+        removed_entries = 0
+        for tx in stale:
+            if tx.expense_id:
+                removed_entries += Expense.objects.filter(id=tx.expense_id, user=statement.user).delete()[0]
+            if tx.income_id:
+                removed_entries += Income.objects.filter(id=tx.income_id, user=statement.user).delete()[0]
+            tx.delete()
+        StatementTransaction.objects.bulk_create(new)
+        self.resync_stats["statements"] += 1
+        self.resync_stats["rows_added"] += len(new)
+        self.resync_stats["rows_removed"] += len(stale)
+        self.resync_stats["entries_removed"] += removed_entries
+
     def _save_statements(self, user, plans, saved):
+        self.resync_stats = {"statements": 0, "rows_added": 0, "rows_removed": 0, "entries_removed": 0}
         count = 0
         for plan in plans:
             spec = plan["account"]
@@ -314,16 +363,11 @@ class StatementImportView(APIView):
                     user=user, name=spec["name"],
                     defaults={"kind": spec["kind"], "institution": spec["institution"], "last4": spec["last4"]},
                 )
-            # The same file again: its rows are already on record, but take
-            # the period and account from this upload — they may have been
-            # read better this time (or the user picked another account).
+            # The same file again: it may be read better this time (or the user
+            # picked another account), so bring the stored copy up to date.
             earlier = Statement.objects.filter(user=user, file_hash=plan["file_hash"]).first() if plan["file_hash"] else None
             if earlier:
-                earlier.period_start, earlier.period_end = plan["start"], plan["end"]
-                if earlier.account_id != account.id:
-                    earlier.account = account
-                    earlier.transactions.update(account=account)
-                earlier.save(update_fields=["period_start", "period_end", "account"])
+                self._resync(earlier, account, plan, saved)
                 continue
             statement = Statement.objects.create(
                 user=user, account=account, filename=plan["filename"], file_hash=plan["file_hash"],
