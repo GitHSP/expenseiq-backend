@@ -32,7 +32,7 @@ from financial_planner.services import (
 )
 
 from .insights import THEMES, get_accounts_overview, search_transactions
-from .advisor import get_alerts, monthly_review, plan_card_payments
+from .advisor import get_alerts, monthly_review, plan_card_payments, plan_vs_actual
 from .personal import add_rule, delete_budget, delete_rule, forget, list_budgets, list_rules, remember, set_budget
 
 EXPENSE_CATEGORIES = [c[0] for c in Expense.CATEGORIES]
@@ -110,11 +110,25 @@ def get_upcoming_payments(user, **kwargs):
     }
 
 def get_financial_summary(user, **kwargs):
+    from .advisor import _latest_full_month, _month_figures, _prev_month
     today = date.today()
     month_expenses = Expense.objects.filter(user=user, date__year=today.year, date__month=today.month)
     month_income = Income.objects.filter(user=user, date__year=today.year, date__month=today.month)
     total_expenses = sum((e.amount for e in month_expenses), Decimal("0.00"))
     total_income = sum((i.amount for i in month_income), Decimal("0.00"))
+
+    # Actual money in/out comes from the uploaded statements.
+    actual = None
+    from expenses.models import StatementTransaction
+    if StatementTransaction.objects.filter(user=user).exists():
+        ym = _latest_full_month(user)
+        actual = {}
+        for key in (ym, _prev_month(ym)):
+            f = _month_figures(user, key)
+            actual[key] = {"income": str(f["income"]), "spent": str(f["spent"]),
+                           "saved": str(f["income"] - f["spent"]), "interest": str(f["interest"])}
+    from financial_planner.models import RecurringItem
+    planned = RecurringItem.objects.filter(user=user, is_active=True)
 
     debts = Debt.objects.filter(user=user, is_active=True).order_by("avalanche_order")
     debts_data = [
@@ -151,9 +165,15 @@ def get_financial_summary(user, **kwargs):
 
     return {
         "ok": True,
+        "actual_from_statements": actual or "No statements uploaded yet.",
+        "planned_monthly_from_planner": {
+            "income": str(sum((r.amount for r in planned if r.category == "income"), Decimal("0.00"))),
+            "payments": str(sum((r.amount for r in planned if r.category != "income"), Decimal("0.00"))),
+            "note": "Rough amounts the user set in Planner — a plan, not what actually happened.",
+        },
         "month": f"{today.year}-{today.month:02d}",
-        "total_expenses_this_month": str(total_expenses),
-        "total_income_this_month": str(total_income),
+        "entered_in_app_this_month": {"expenses": str(total_expenses), "income": str(total_income),
+                                      "note": "Only entries added in Glacier this month; the statements are the real record."},
         "active_debts": debts_data,
         "total_debt_balance": str(total_debt),
         "emergency_fund": fund_data,
@@ -603,6 +623,7 @@ TOOL_HANDLERS = {
     "monthly_review": monthly_review,
     "get_alerts": get_alerts,
     "plan_card_payments": plan_card_payments,
+    "plan_vs_actual": plan_vs_actual,
     "add_rule": add_rule, "list_rules": list_rules, "delete_rule": delete_rule,
     "set_budget": set_budget, "list_budgets": list_budgets, "delete_budget": delete_budget,
     "remember": remember, "forget": forget,
@@ -671,6 +692,18 @@ TOOL_SCHEMAS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "plan_vs_actual",
+        "description": (
+            "Compare the user's PLANNED payments and income (Planner checklist/recurring, rough amounts they "
+            "typed in) with what ACTUALLY happened on their statements for a month: each planned item with the "
+            "real amount paid, the difference and the matching transactions (or 'not found'), plus actual total "
+            "income and spending. Use for 'did I pay everything?', 'what did my bills really cost?', "
+            "'planned vs actual'."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "month": {"type": "string", "description": "YYYY-MM. Omit for the latest month with transactions."}}},
+    },
+    {
         "name": "plan_card_payments",
         "description": (
             "A credit-card payoff plan from the real statement balances, interest rates, minimums and due dates: "
@@ -687,14 +720,16 @@ TOOL_SCHEMAS = [
             "Save a tidy-up rule for anything whose description mentions `match`: rename it, set its category, "
             "and/or mark it as the user's own money moving between their accounts (treat_as 'transfer', e.g. "
             "'Wealthsimple is my own account' - matching expense/income entries are removed since they weren't "
-            "spending) or as real spending (treat_as 'spending'). Applies to everything already imported and to "
+            "spending), as real spending (treat_as 'spending'), or as a roommate/friend paying their share of "
+            "shared bills (treat_as 'shared', match their name as it appears in e-transfers). Applies to everything already imported and to "
             "future imports. Use one of the app's categories."
         ),
         "input_schema": {"type": "object", "properties": {
             "match": {"type": "string", "description": "Text to look for, e.g. 'tim hortons', 'wealthsimple', 'AMZN'."},
             "rename_to": {"type": "string", "description": "Clean name, e.g. 'Amazon'."},
             "category": {"type": "string", "enum": EXPENSE_CATEGORIES + [c for c in INCOME_CATEGORIES if c not in EXPENSE_CATEGORIES]},
-            "treat_as": {"type": "string", "enum": ["", "transfer", "spending"]},
+            "treat_as": {"type": "string", "enum": ["", "transfer", "spending", "shared"],
+                         "description": "'shared' = money from someone paying their share of bills the user pays in full (a roommate's e-transfer for rent/utilities/WiFi): counted as income, shown separately, and netted off shared bills."},
         }, "required": ["match"]},
     },
     {"name": "list_rules", "description": "List the user's tidy-up rules.", "input_schema": {"type": "object", "properties": {}}},
@@ -793,10 +828,9 @@ TOOL_SCHEMAS = [
     {
         "name": "get_financial_summary",
         "description": (
-            "Get a snapshot of the user's current finances: this month's total expenses and "
-            "income, all active debts with balances/APR, total debt, emergency fund status, "
-            "and this month's checklist completion. Use this whenever you need context before "
-            "answering a question or before deciding how to act."
+            "Snapshot of the user's finances: ACTUAL income/spending/savings for the latest two months from "
+            "their uploaded statements, the PLANNED monthly amounts from Planner (rough targets), all active "
+            "debts with balances/APR, total debt, emergency fund and this month's checklist. Use it for context."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },

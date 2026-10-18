@@ -167,3 +167,52 @@ class PlanAndReviewTests(Base):
         r = monthly_review(self.user, month="2026-09")
         self.assertEqual((r["income"], r["spent"], r["spent_last_month"], r["saved"]), ("3000.00", "350.00", "200.00", "2650.00"))
         self.assertEqual(r["biggest_merchant_changes"][0]["change"], "150.00")
+
+
+class PlanVsActualTests(Base):
+    def setUp(self):
+        super().setUp()
+        from financial_planner.models import RecurringItem
+        for label, amount, cat, day in [("Salary ACME", 3000, "income", None), ("Rent", 650, "fixed_expense", 1),
+                                        ("Groceries", 150, "fixed_expense", 15), ("Bank Charge", 15, "auto_debit", 30),
+                                        ("Bank Charge RBC", 9, "auto_debit", 20), ("Gym", 18, "auto_debit", 25)]:
+            RecurringItem.objects.create(user=self.user, label=label, amount=amount, category=cat, due_day=day)
+        st = self.statement(self.chq, date(2026, 9, 1), date(2026, 9, 30))
+        self.tx(st, date(2026, 9, 4), "Payroll Acme", "3050", desc="PAYROLL DEPOSIT ACME INC")
+        self.tx(st, date(2026, 9, 1), "Realstar Corp", "-2550", desc="PREAUTHORIZED DEBIT REALSTAR CORP")
+        self.tx(st, date(2026, 9, 3), "E-Transfer Alex", "950", desc="E-TRANSFER 106114243040 ALEX")
+        self.tx(st, date(2026, 9, 5), "E-Transfer Sam", "950", desc="E-TRANSFER 106114278233 SAM")
+        self.tx(st, date(2026, 9, 8), "Loblaws", "-62.10")
+        self.tx(st, date(2026, 9, 20), "No Frills", "-40.00")
+        self.tx(st, date(2026, 9, 12), "E-Transfer Friend", "-500", desc="E-TRANSFER 106101999999 FRIEND")   # not a fee
+        self.tx(st, date(2026, 9, 30), "Service Charge", "-16.95", desc="SERVICE CHARGE MONTHLY FEE")
+
+    def test_actual_amounts_come_from_statements(self):
+        from .advisor import plan_vs_actual
+        r = plan_vs_actual(self.user, month="2026-09")
+        items = {i["item"]: i for i in r["items"]}
+        self.assertEqual(items["Salary ACME"]["actual"], "3050.00")
+        self.assertEqual(items["Rent"]["actual"], "2550.00")
+        self.assertEqual(items["Groceries"]["actual"], "102.10")
+        self.assertEqual(items["Bank Charge"]["actual"], "16.95")                 # the e-transfer isn't a fee
+        self.assertIn("counted under", items["Bank Charge RBC"]["status"])
+        self.assertEqual(items["Gym"]["status"], "not found on statements")
+        self.assertIsNone(r["shared_bills"])
+
+    def test_roommates_paying_their_share(self):
+        from .advisor import monthly_review, plan_vs_actual
+        add_rule(self.user, "alex", treat_as="shared")
+        add_rule(self.user, "sam", treat_as="shared")
+        r = plan_vs_actual(self.user, month="2026-09")
+        self.assertEqual(r["shared_bills"]["you_paid"], "2550.00")
+        self.assertEqual(r["shared_bills"]["roommates_paid_you"], "1900.00")
+        self.assertEqual(r["shared_bills"]["your_share"], "650.00")              # = the planned rent
+        review = monthly_review(self.user, month="2026-09")
+        self.assertEqual((review["income"], review["roommate_contributions"], review["income_excluding_contributions"]),
+                         ("4950.00", "1900.00", "3050.00"))
+
+    def test_summary_reports_statement_figures(self):
+        from .tools import get_financial_summary
+        s = get_financial_summary(self.user)
+        self.assertEqual(s["actual_from_statements"]["2026-09"]["income"], "4950.00")
+        self.assertEqual(s["planned_monthly_from_planner"]["income"], "3000.00")

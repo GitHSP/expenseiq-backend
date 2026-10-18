@@ -21,14 +21,14 @@ from expenses.models import Account, Expense, Income, StatementTransaction
 # Everyday themes people ask about, matched against the merchant/description.
 THEMES = {
     "coffee": r"coffee|caf[eé]|espresso|starbucks|tim hortons?|tims\b|second cup|timothy|balzac|blue bottle|"
-              r"pilot coffee|dineen|aroma espresso|coffee time|country style|nespresso|tea|bubble tea|chatime|"
+              r"pilot coffee|dineen|aroma espresso|coffee time|country style|nespresso|\btea\b|bubble tea|chatime|"
               r"david'?s tea|pastr(y|ies)|bakery",
     "groceries": r"loblaws|no ?frills|sobeys|\bmetro\b|food basics|freshco|superstore|safeway|save-?on|farm boy|"
                  r"t&t|longo|walmart|costco|grocer|fortinos|zehrs|\biga\b|foodland|whole foods|mart\b|supermarket|"
                  r"food ?mart|shoppers drug|dollarama",
-    "restaurants": r"restaurant|grill|pizza|burger|sushi|ramen|pho|bistro|kitchen|diner|\bpub\b|bar\b|tavern|"
+    "restaurants": r"restaurant|grill|pizza|burger|sushi|ramen|\bpho\b|bistro|kitchen|diner|\bpub\b|\bbar\b|tavern|"
                    r"mcdonald|wendy|a&w|kfc|popeyes|subway|chipotle|harvey|mary brown|domino|pizza pizza|"
-                   r"shawarma|thai|indian|cuisine|bbq|taco|noodle",
+                   r"shawarma|\bthai\b|indian|cuisine|bbq|taco|noodle",
     "food delivery": r"uber ?eats|doordash|skip ?the ?dishes|skipthedishes|instacart|foodora",
     "rideshare": r"\buber\b(?!\s?eats)|lyft",
     "transit": r"presto|\bttc\b|go transit|translink|compass|oc transpo|\bstm\b|via rail|up express|ferry",
@@ -44,14 +44,17 @@ THEMES = {
                         r"internet|teksavvy",
     "utilities": r"hydro|enbridge|alectra|toronto water|utilit|electric",
     "rent & housing": r"\brent\b|landlord|property management|realstar|capreit|mortgage|condo fee",
-    "insurance": r"insurance|intact|manulife|sun life|belair|aviva|desjardins ins|wawanesa|sonnet|square one",
+    "insurance": r"insurance|assurance|intact|manulife|sun life|belair|aviva|desjardins ins|wawanesa|sonnet|square one|"
+                 r"ivari|canada life|great-west|equitable|empire life|co-?operators|allstate|state farm",
     "fitness": r"goodlife|fit4less|planet fitness|la fitness|anytime fitness|orangetheory|\bgym\b|ymca|crossfit|yoga",
     "travel": r"air canada|westjet|porter|flair|swoop|airbnb|expedia|booking\.com|hotel|marriott|hilton|"
               r"airline|airport|travel",
     "health": r"pharmacy|shoppers drug|rexall|dental|dentist|clinic|physio|optical|medical",
-    "entertainment": r"cineplex|cinema|theatre|theater|ticketmaster|concert|steam|game|bowling|museum",
-    "interest & fees": r"interest|\bfee\b|fees|nsf|overdraft|service charge|annual fee",
+    "entertainment": r"cineplex|cinema|theatre|theater|ticketmaster|concert|\bsteam\b|\bgames?\b|bowling|museum",
+    "interest & fees": r"\binterest\b|\bfees?\b|\bnsf\b|overdraft|service charge|annual fee",   # \b: not tra-NSF-er
+    "bank fees": r"\bfees?\b|\bnsf\b|overdraft fee|service charge|annual fee|record-?keeping|monthly fee",
     "cash": r"\batm\b|cash withdrawal|cash advance",
+    "money abroad": r"\bwise\b|transferwise|western union|remitly|moneygram|xoom|lemfi|remit|abroad|international transfer",
     "transfers & e-transfers": r"e-?transfer|interac|transfer",
 }
 

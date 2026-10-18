@@ -35,7 +35,7 @@ def apply_to_preview(user, preview):
             row["expense_category"] = rule.category
         if rule.treat_as == "transfer":
             row["is_transfer"] = True
-        elif rule.treat_as == "spending":
+        elif rule.treat_as in ("spending", "shared"):
             row["is_transfer"] = False
             row["transfer_match"] = None
     return preview
@@ -61,8 +61,10 @@ def apply_rule(user, rule):
                         entry.delete()
                         counts["entries_removed"] += 1
                 changes.update(kind="transfer", expense=None, income=None)
-            elif rule.treat_as == "spending" and tx.kind == "transfer":
+            elif rule.treat_as in ("spending", "shared") and tx.kind == "transfer":
                 changes["kind"] = "skipped"
+            if rule.treat_as == "shared" and tx.amount > 0 and tx.category != "Shared bills":
+                changes["category"] = "Shared bills"
             if rule.treat_as != "transfer":
                 for entry in (tx.expense, tx.income):
                     if entry is None:

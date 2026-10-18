@@ -52,9 +52,15 @@ def _latest_full_month(user):
 # Monthly review
 # ─────────────────────────────────────────────
 
+def _shared_rules(user):
+    from expenses.models import MerchantRule
+    return [r.match.lower() for r in MerchantRule.objects.filter(user=user, treat_as="shared")]
+
+
 def _month_figures(user, ym):
     start, end = _month_bounds(ym)
-    income = spent = D0
+    shared = _shared_rules(user)
+    income = spent = contributions = D0
     cats, merchants, names = defaultdict(lambda: D0), defaultdict(lambda: D0), {}
     interest = fees = D0
     for r in _rows(user, start, end):
@@ -62,6 +68,8 @@ def _month_figures(user, ym):
             continue
         if r["amount"] > 0 and r["account_kind"] != "credit_card":
             income += r["amount"]
+            if shared and any(m in f"{r['title']} {r['description']}".lower() for m in shared):
+                contributions += r["amount"]
             continue
         value = -r["amount"]                       # card refunds come in negative
         spent += value
@@ -75,7 +83,7 @@ def _month_figures(user, ym):
         elif FEE_RE.search(text):
             fees += value
     return {"income": income, "spent": spent, "categories": cats, "merchants": merchants, "names": names,
-            "interest": interest, "fees": fees}
+            "interest": interest, "fees": fees, "contributions": contributions}
 
 
 def monthly_review(user, month=None, **kwargs):
@@ -104,6 +112,8 @@ def monthly_review(user, month=None, **kwargs):
         "income": _money(cur["income"]), "income_last_month": _money(before["income"]),
         "spent": _money(cur["spent"]), "spent_last_month": _money(before["spent"]),
         "saved": _money(saved),
+        "roommate_contributions": _money(cur["contributions"]),
+        "income_excluding_contributions": _money(cur["income"] - cur["contributions"]),
         "savings_rate_percent": round(float(saved / cur["income"] * 100), 1) if cur["income"] else None,
         "interest_paid": _money(cur["interest"]), "fees_paid": _money(cur["fees"]),
         "biggest_category_changes": deltas(cur["categories"], before["categories"]),
@@ -369,3 +379,161 @@ def budget_status(user, month=None, **kwargs):
                     "projected_month_end": _money(projected),
                     "covers": b.category or b.theme or b.query})
     return {"ok": True, "month": ym, "budgets": out}
+
+
+# ─────────────────────────────────────────────
+# Planned (Planner) vs actual (statements)
+# ─────────────────────────────────────────────
+
+def _planned_items(user, ym):
+    """The month's Planner checklist, or the recurring payments if that
+    month has no plan."""
+    from financial_planner.models import ChecklistItem, MonthlyPlan, RecurringItem
+    y, m = (int(x) for x in ym.split("-"))
+    plan = MonthlyPlan.objects.filter(user=user, year=y, month=m).first()
+    if plan:
+        items = [{"label": i.label, "amount": i.amount or D0, "category": i.category, "due_day": i.due_day,
+                  "debt": i.linked_debt, "done": i.is_completed}
+                 for i in ChecklistItem.objects.filter(monthly_plan=plan).select_related("linked_debt")]
+        if items:
+            return items, "checklist"
+    return ([{"label": r.label, "amount": r.amount, "category": r.category, "due_day": r.due_day, "debt": None, "done": None}
+             for r in RecurringItem.objects.filter(user=user, is_active=True)], "recurring")
+
+
+# Planner items that stand for a kind of spending rather than one bill.
+LABEL_THEMES = [
+    ("grocer", "groceries"), ("utilit", "utilities"), ("hydro", "utilities"), ("transit", "transit"),
+    ("presto", "transit"), ("mobile", "phone & internet"), ("phone", "phone & internet"),
+    ("internet", "phone & internet"), ("gym", "fitness"), ("fitness", "fitness"), ("insurance", "insurance"),
+    ("rent", "rent & housing"), ("coffee", "coffee"), ("gas", "gas"), ("fuel", "gas"), ("dining", "restaurants"),
+    ("restaurant", "restaurants"), ("eating out", "restaurants"), ("subscription", "subscriptions"),
+    ("delivery", "food delivery"), ("uber", "rideshare"), ("alcohol", "alcohol"),
+    ("bank charge", "bank fees"), ("bank fee", "bank fees"), ("service charge", "bank fees"),
+    ("interest", "interest & fees"),
+    ("abroad", "money abroad"), ("remit", "money abroad"), ("international", "money abroad"),
+    ("wifi", "phone & internet"), ("wi-fi", "phone & internet"),
+]
+SHARED_THEMES = ("rent & housing", "utilities", "phone & internet")
+
+
+def plan_vs_actual(user, month=None, **kwargs):
+    """For each planned payment: what the statements show was actually paid."""
+    from expenses.statement_import import _words
+    ym = (month or _latest_full_month(user))[:7]
+    try:
+        start, end = _month_bounds(ym)
+    except ValueError:
+        return {"ok": False, "message": "month must look like 2026-09."}
+    items, source = _planned_items(user, ym)
+    if not items:
+        return {"ok": True, "month": ym, "message": "No planned payments in the Planner for this month."}
+
+    # A few days either side: a bill due on the 1st is often paid on the 30th.
+    window = (start - timedelta(days=4), end + timedelta(days=4))
+    txs = list(StatementTransaction.objects.filter(user=user, date__range=window).select_related("account"))
+    covered = {a.id for a in Account.objects.filter(user=user, statements__period_start__lte=end,
+                                                    statements__period_end__gte=start)}
+    used, rows, debt_accounts = set(), [], {a.debt_id: a for a in Account.objects.filter(user=user, debt__isnull=False)}
+    own_name = (user.first_name or "").strip().lower() if len((user.first_name or "").strip()) >= 3 else ""
+    theme_owner = {}            # theme -> the planned item its spending is counted under
+
+    def in_month(t):
+        return start <= t.date <= end
+
+    for item in sorted(items, key=lambda i: -i["amount"]):
+        planned, label = item["amount"], item["label"]
+        is_income = item["category"] == "income"
+        matched, how = [], None
+        card = debt_accounts.get(item["debt"].id) if item["debt"] else None
+        if card:
+            # A card payment: the credit on the card's own statement.
+            matched = [t for t in txs if t.account_id == card.id and t.amount > 0 and in_month(t) and t.id not in used
+                       and "payment" in f"{t.title} {t.description}".lower()]
+            how = f"payments received on {card.name}"
+        theme = next((t for key, t in LABEL_THEMES if key in label.lower()), None) if not card and not is_income else None
+        if not matched and theme and theme in theme_owner:
+            # Another planned item already covers this kind of spending.
+            rows.append({"item": label, "category": item["category"], "theme": theme, "planned": _money(planned),
+                         "actual": "0.00", "difference": _money(-planned), "status": f"counted under '{theme_owner[theme]}'",
+                         "how_matched": None, "transactions": []})
+            continue
+        if not matched and theme:
+            theme_owner[theme] = label
+            pattern = re.compile(THEMES[theme], re.I)
+            matched = [t for t in txs if t.amount < 0 and in_month(t) and t.id not in used and t.kind != "transfer"
+                       and pattern.search(f"{t.title} {t.description}")]
+            how = f"all '{theme}' spending that month"
+        if not matched and not theme:
+            words = _words(label) | (_words(item["debt"].name) if item["debt"] else set())
+            cands = []
+            for t in txs:
+                if t.id in used or (t.amount > 0) != is_income:
+                    continue
+                if not in_month(t) and not (item["due_day"] and abs((t.date - start).days) <= 4):
+                    continue
+                overlap = len(words & _words(f"{t.title} {t.description}"))
+                if overlap:
+                    cands.append((overlap, t))
+            if cands:
+                best = max(c[0] for c in cands)
+                matched = [t for o, t in cands if o == best]
+                how = "matched by name"
+        if not matched and planned > 0 and not theme:
+            # Similar amount (within 15%) around the due day.
+            for t in txs:
+                if t.id in used or (t.amount > 0) != is_income or not in_month(t) or t.kind == "transfer":
+                    continue
+                text = f"{t.title} {t.description}".lower()
+                if FEE_RE.search(text) or "interest" in text or (own_name and own_name in text):
+                    continue
+                near_due = item["due_day"] is None or abs(t.date.day - item["due_day"]) <= 5
+                if near_due and abs(abs(t.amount) - planned) <= planned * Decimal("0.15"):
+                    matched, how = [t], "matched by amount and date - check it's the right one"
+                    break
+        used.update(t.id for t in matched)
+        actual = sum((abs(t.amount) for t in matched), D0)
+        if matched:
+            diff = actual - planned
+            status = "as planned" if abs(diff) <= max(planned * Decimal("0.02"), Decimal("1")) else \
+                     ("more than planned" if diff > 0 else "less than planned")
+        else:
+            status = "not found on statements" if covered else "no statement uploaded for this month"
+        rows.append({"item": label, "category": item["category"], "theme": theme,
+                     "planned": _money(planned), "actual": _money(actual),
+                     "difference": _money(actual - planned), "status": status, "how_matched": how,
+                     "transactions": [{"date": str(t.date), "title": t.title, "amount": _money(abs(t.amount)),
+                                       "account": t.account.name} for t in matched[:6]]})
+
+    cur = _month_figures(user, ym)
+    out_items = [r for r in rows if r["category"] != "income"]
+    in_items = [r for r in rows if r["category"] == "income"]
+    planned_out = sum((Decimal(r["planned"]) for r in out_items), D0)
+    actual_matched_out = sum((Decimal(r["actual"]) for r in out_items), D0)
+    shared_block = None
+    if cur["contributions"]:
+        shared_rows = [r for r in rows if r.get("theme") in SHARED_THEMES]
+        paid = sum((Decimal(r["actual"]) for r in shared_rows), D0)
+        planned_share = sum((Decimal(r["planned"]) for r in shared_rows), D0)
+        shared_block = {
+            "bills": [r["item"] for r in shared_rows],
+            "you_paid": _money(paid),
+            "roommates_paid_you": _money(cur["contributions"]),
+            "your_share": _money(paid - cur["contributions"]),
+            "planned_share": _money(planned_share),
+            "note": "Rent, utilities and internet the user pays in full, less what roommates/friends sent "
+                    "(e-transfers marked as shared contributions). Compare your_share with planned_share.",
+        }
+    return {
+        "ok": True, "month": ym, "planned_from": source,
+        "items": rows,
+        "shared_bills": shared_block,
+        "planned_payments_total": _money(planned_out),
+        "actual_for_those_payments": _money(actual_matched_out),
+        "planned_income": _money(sum((Decimal(r["planned"]) for r in in_items), D0)),
+        "actual_income_from_statements": _money(cur["income"]),
+        "of_which_roommate_contributions": _money(cur["contributions"]),
+        "actual_spending_from_statements": _money(cur["spent"]),
+        "note": "Actual figures come only from uploaded statements. 'Actual spending' is everything spent that month "
+                "(planned or not), excluding transfers between the user's own accounts.",
+    }

@@ -166,6 +166,7 @@ class MerchantRule(models.Model):
         ('',         'No change'),
         ('transfer', "Own money moving (not spending or income)"),
         ('spending', 'Real spending or income'),
+        ('shared',   'Contribution toward shared bills (e.g. a roommate paying their share of rent)'),
     ]
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='merchant_rules')
     match      = models.CharField(max_length=100)                  # text in the description, any case
