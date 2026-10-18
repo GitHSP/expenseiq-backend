@@ -60,3 +60,18 @@ class SyncedMessage(models.Model):
 
     def __str__(self):
         return f"{self.user.email} — message {self.client_id}"
+
+
+class Memory(models.Model):
+    """Something the user told Aurora to keep in mind across chats (payday,
+    salary, goals, which accounts are theirs). Only ever saved from the
+    user's own words; shown to Aurora at the start of every chat."""
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="assistant_memories")
+    text       = models.CharField(max_length=300)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.user.email}: {self.text[:40]}"

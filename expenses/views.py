@@ -14,6 +14,7 @@ from rest_framework.views       import APIView
 from .models      import Account, Expense, Income, Statement, StatementTransaction
 from .accounts    import guess_account, match_existing_account, statement_period, statement_summary
 from .card_debts  import sync_debt
+from .rules       import apply_to_preview
 from .serializers import ExpenseSerializer, IncomeSerializer
 from .bulk        import MODELS as BULK_MODELS, bulk_delete
 from financial_planner.models   import ChecklistItem
@@ -151,7 +152,7 @@ class StatementPreviewView(APIView):
         return Response({
             "files": file_info,
             "accounts": [{"id": a.id, "name": a.name, "kind": a.kind} for a in accounts],
-            "rows": match_checklist(request.user, build_preview(request.user, files), files),
+            "rows": apply_to_preview(request.user, match_checklist(request.user, build_preview(request.user, files), files)),
             "skipped": skipped,
         })
 

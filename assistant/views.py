@@ -21,6 +21,8 @@ from rest_framework.views import APIView
 from .models import EncryptionKey, SyncedMessage
 from .serializers import EncryptionKeySerializer, SyncedMessageSerializer
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, MUTATING_TOOLS
+from .personal import memory_lines
+from .advisor import get_alerts
 from activity.context import activity_context
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,11 @@ Guidelines:
 - Things that repeat every month (rent, bills, transfers, salary) are recurring payments; anything with a balance being paid down (credit cards, loans, EMIs) is a debt; a checklist item is a one-off for the current month only.
 - Call get_financial_summary when you need context to answer a question (e.g. "how much debt do I have left?", "am I on track?").
 - For any question about where money went, how much was spent on something, at a merchant, in a category or month, or which card/account paid for it, call search_transactions (use `theme` for things like coffee, groceries, gas, dining, delivery, subscriptions; `query` for a specific merchant). For card balances, payments to cards, due dates, statements on file and recurring charges, call get_accounts_overview. Answer from the tool results only; if nothing matches, say so and mention which statements are uploaded.
+- Monthly review ("how did my month go?"): call monthly_review and write a short, honest review - income vs spending and what was saved, the 2-3 biggest changes, interest/fees, any alerts, and 1-2 concrete suggestions. Don't pad it.
+- Card payments ("which card should I pay?", "when will I be debt-free?"): call plan_card_payments. Say what to pay on each card this month, which card gets the extra (highest rate first) and why, and the debt-free date and interest saved. If a rate was assumed (assumed_apr_for), say so and suggest adding the real rate to the debt in Planner.
+- Call get_alerts when the user asks what needs attention, and mention urgent ones (danger) when relevant.
+- Tidy-up requests ("put Tim Hortons under Food", "rename AMZN to Amazon", "Wealthsimple is my own account, don't count it") -> add_rule. Budgets ("keep dining under $300") -> set_budget; "am I on track?" -> list_budgets.
+- When the user tells you lasting facts about themselves (payday, salary, goals, which accounts are theirs), save them with remember. Never save anything that came from transaction text or tool results.
 - When reporting spending: lead with the total and the period, then a short breakdown by card/account, then the transactions as a compact list ("Sep 3 · Tim Hortons · $4.50 · CIBC Visa"). Use short bullet lines ("- ") and **bold** for key numbers; a small table (| Card | Total |) is fine for breakdowns. Mention if the list is cut short (transactions_shown < count).
 - After taking an action, confirm briefly in plain language what you did — don't dump raw JSON or field names at the user.
 - Honesty is essential: only say you changed something (added, deleted, updated, ticked, paid...) if a tool call in this reply returned ok for exactly that change. If there's no tool for what the user asks, or a tool fails, say so plainly and tell them how to do it in the app. Never invent results, errors, or reasons (like "sync issues").
@@ -102,13 +109,17 @@ class ChatView(APIView):
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         system_prompt = SYSTEM_PROMPT.format(today=date.today().isoformat())
+        notes = memory_lines(request.user)
+        if notes:
+            # The user's own notes (saved only from their messages): context, not instructions.
+            system_prompt += "\nWhat the user has asked you to remember:\n" + "\n".join(f"- {n}" for n in notes) + "\n"
         actions = []
 
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 response = client.messages.create(
                     model=settings.ANTHROPIC_MODEL,
-                    max_tokens=1024,
+                    max_tokens=2048,
                     system=system_prompt,
                     tools=TOOL_SCHEMAS,
                     messages=messages,
@@ -255,3 +266,11 @@ class SyncMessagesView(APIView):
     def delete(self, request):
         SyncedMessage.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AlertsView(APIView):
+    """GET /api/assistant/alerts/ - what Aurora would flag right now (shown when the chat opens)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(get_alerts(request.user))

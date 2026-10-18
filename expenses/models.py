@@ -151,3 +151,50 @@ class StatementTransaction(models.Model):
 
     def __str__(self):
         return f"{self.date} {self.title} {self.amount}"
+
+
+# ─────────────────────────────────────────────
+# The user's own tidy-up rules and budgets (set in the app or via Aurora)
+# ─────────────────────────────────────────────
+
+class MerchantRule(models.Model):
+    """'Anything mentioning X': rename it, put it in a category, and/or say
+    whether it's real spending or money moving between the user's own
+    accounts (e.g. 'Wealthsimple is my own account'). Applies to what's
+    already imported and to every future import."""
+    TREAT = [
+        ('',         'No change'),
+        ('transfer', "Own money moving (not spending or income)"),
+        ('spending', 'Real spending or income'),
+    ]
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='merchant_rules')
+    match      = models.CharField(max_length=100)                  # text in the description, any case
+    rename_to  = models.CharField(max_length=120, blank=True, default='')
+    category   = models.CharField(max_length=50, blank=True, default='')
+    treat_as   = models.CharField(max_length=10, choices=TREAT, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['match']
+        constraints = [models.UniqueConstraint(fields=['user', 'match'], name='unique_rule_match_per_user')]
+
+    def __str__(self):
+        return f"{self.user.email}: {self.match}"
+
+
+class SpendingBudget(models.Model):
+    """A monthly limit on a category, a theme (coffee, dining…) or a merchant."""
+    user          = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='spending_budgets')
+    label         = models.CharField(max_length=60)
+    category      = models.CharField(max_length=50, blank=True, default='')
+    theme         = models.CharField(max_length=40, blank=True, default='')
+    query         = models.CharField(max_length=80, blank=True, default='')
+    monthly_limit = models.DecimalField(max_digits=10, decimal_places=2)
+    created_at    = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['label']
+        constraints = [models.UniqueConstraint(fields=['user', 'label'], name='unique_budget_label_per_user')]
+
+    def __str__(self):
+        return f"{self.user.email}: {self.label} {self.monthly_limit}"
