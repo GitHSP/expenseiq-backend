@@ -107,7 +107,11 @@ MONEY_TOLERANCE = 40     # how far (pt) a number may sit from its column's edge
 PHRASE_GAP = 6           # header words closer than this form one phrase
 
 # Notes printed under a transaction that aren't part of its name.
-NOTE_LINE_RE = re.compile(r"foreign currency|exchange rate|@\s*\d+\.\d+|conversion", re.IGNORECASE)
+NOTE_LINE_RE = re.compile(
+    r"foreign currency|exchange rate|@\s*\d+\.\d+|conversion|"
+    r"continued (on|from) (the )?(next|previous|last) page|\(continued\)",      # CIBC page breaks
+    re.IGNORECASE,
+)
 
 # A table titled like this lists money coming in (e.g. CIBC "Your payments").
 CREDIT_SECTION_RE = re.compile(r"payments|credits|refunds", re.IGNORECASE)

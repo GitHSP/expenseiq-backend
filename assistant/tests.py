@@ -136,3 +136,84 @@ class FalseClaimReplyTests(TestCase):
         self.assertNotIn("Done", res.data["reply"])
         self.assertEqual(res.data["actions"], [])
         self.assertTrue(Expense.objects.exists())
+
+
+class SearchTransactionsToolTests(TestCase):
+    """Aurora can answer 'how much on coffee, and on which card?' from statements and manual entries."""
+
+    def setUp(self):
+        from expenses.models import Account, Statement, StatementTransaction
+        self.user = get_user_model().objects.create_user(email="st@example.test", username="st", password="x-Test-12345")
+        other = get_user_model().objects.create_user(email="st2@example.test", username="st2", password="x-Test-12345")
+        visa = Account.objects.create(user=self.user, name="CIBC Visa •0042", kind="credit_card", institution="CIBC")
+        chq = Account.objects.create(user=self.user, name="CIBC Chequing •0001", kind="chequing", institution="CIBC")
+        def st(acct, u=None):
+            return Statement.objects.create(user=u or self.user, account=acct, filename="s.pdf",
+                                            period_start=date(2026, 9, 1), period_end=date(2026, 9, 30))
+        sv, sc = st(visa), st(chq)
+        def tx(statement, d, title, amount, kind="skipped", desc=None, u=None):
+            StatementTransaction.objects.create(user=u or self.user, statement=statement, account=statement.account,
+                                                date=date(2026, 9, d), title=title, description=desc or title.upper(),
+                                                amount=Decimal(amount), kind=kind)
+        tx(sv, 3, "Tim Hortons Toronto On", "-4.50")
+        tx(sv, 9, "Starbucks", "-6.25")
+        tx(sc, 4, "TIM HORTONS #24", "-2.10")
+        tx(sv, 5, "Loblaws", "-63.10")
+        tx(sv, 20, "Payment Thank You", "500.00", kind="transfer")
+        tx(sc, 20, "Internet Transfer To Card", "-500.00", kind="transfer")
+        Expense.objects.create(user=self.user, title="Coffee at Balzac's", amount=Decimal("5.00"), category="Food & Dining",
+                               date=date(2026, 9, 12))
+        theirs = Account.objects.create(user=other, name="Their Visa", kind="credit_card")
+        tx(st(theirs, other), 3, "Tim Hortons", "-99.00", u=other)
+
+    def test_coffee_by_card(self):
+        from .insights import search_transactions
+        r = search_transactions(self.user, theme="coffee")
+        self.assertEqual((r["count"], r["total_spent"]), (4, "17.85"))
+        by = {a["account"]: a["total"] for a in r["by_account"]}
+        self.assertEqual(by, {"CIBC Visa •0042": "10.75", "CIBC Chequing •0001": "2.10",
+                              "Entered in Glacier (no statement)": "5.00"})
+        # "Tim Hortons Toronto On" and "TIM HORTONS #24" are one merchant.
+        tims = [m for m in r["by_merchant"] if "tim hortons" in m["merchant"].lower()]
+        self.assertEqual([(len(tims), tims[0]["count"], tims[0]["total"])], [(1, 2, "6.60")])
+
+    def test_transfers_and_other_users_are_left_out(self):
+        from .insights import search_transactions
+        r = search_transactions(self.user, account="CIBC Visa")
+        self.assertEqual(r["total_spent"], "73.85")          # no card payment, no other user's rows
+        r = search_transactions(self.user, query="transfer", include_transfers=True)
+        self.assertEqual(r["count"], 1)                      # spending side only: the chequing transfer out
+
+    def test_registered_as_read_only_tools(self):
+        from .tools import MUTATING_TOOLS, TOOL_HANDLERS, TOOL_SCHEMAS
+        names = {t["name"] for t in TOOL_SCHEMAS}
+        for tool in ("search_transactions", "get_accounts_overview"):
+            self.assertIn(tool, names)
+            self.assertIn(tool, TOOL_HANDLERS)
+            self.assertNotIn(tool, MUTATING_TOOLS)
+        self.assertTrue(TOOL_HANDLERS["get_accounts_overview"](self.user)["ok"])
+
+
+class SearchThroughChatTests(SearchTransactionsToolTests):
+    """The chat endpoint runs search_transactions when the model asks for it."""
+
+    def test_chat_runs_the_search_tool(self):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        call = NS(type="tool_use", id="t1", name="search_transactions", input={"theme": "coffee"})
+        answer = NS(stop_reason="end_turn", content=[NS(type="text", text="You spent **$17.85** on coffee.")])
+        client = APIClient()
+        client.force_authenticate(self.user)
+        with mock.patch("assistant.views.anthropic.Anthropic") as A, \
+             mock.patch("assistant.views.settings.ANTHROPIC_API_KEY", "test-key"):
+            A.return_value.messages.create.side_effect = [NS(stop_reason="tool_use", content=[call]), answer]
+            res = client.post("/api/assistant/chat/", {"messages": [
+                {"role": "user", "content": "How much did I spend on coffee, and on which card?"}]}, format="json")
+            history = A.return_value.messages.create.call_args_list[1].kwargs["messages"]
+            sent = next(block["content"] for m in history if m["role"] == "user" and isinstance(m["content"], list)
+                        for block in m["content"] if isinstance(block, dict) and block.get("type") == "tool_result")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn('"total_spent": "17.85"', sent)            # the tool result Claude received
+        self.assertIn("CIBC Visa", sent)
+        self.assertEqual(res.data["reply"], "You spent **$17.85** on coffee.")
+        self.assertEqual(res.data["actions"], [])

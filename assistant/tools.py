@@ -31,6 +31,8 @@ from financial_planner.services import (
     delete_debt as _delete_debt,
 )
 
+from .insights import THEMES, get_accounts_overview, search_transactions
+
 EXPENSE_CATEGORIES = [c[0] for c in Expense.CATEGORIES]
 INCOME_CATEGORIES = [c[0] for c in Income.CATEGORIES]
 DEBT_TYPES = [c[0] for c in Debt.DEBT_TYPE_CHOICES]
@@ -596,6 +598,8 @@ def rollover_month(user, **kwargs):
 
 
 TOOL_HANDLERS = {
+    "search_transactions": search_transactions,
+    "get_accounts_overview": get_accounts_overview,
     "get_upcoming_payments": get_upcoming_payments,
     "get_financial_summary": get_financial_summary,
     "list_expenses": list_expenses,
@@ -637,6 +641,44 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+
+    {
+        "name": "search_transactions",
+        "description": (
+            "Search ALL of the user's transactions: every row of every uploaded bank/credit-card statement "
+            "(each tied to its account or card) plus expenses/income entered by hand. Use it for any question "
+            "about where money went or came from: a merchant ('Uber', 'Amazon'), a theme ('coffee', 'groceries'), "
+            "a category, a card or account, a date range — and 'which card did I use?'. Returns totals, a "
+            "breakdown by account/card, by merchant, by month and by category, and the matching transactions "
+            "(newest first). Transfers between the user's own accounts (incl. card payments) are left out "
+            "unless include_transfers is true; refunds on cards net off spending."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to find in the merchant/description, e.g. 'tim hortons', 'uber', 'amazon'."},
+                "theme": {"type": "string", "enum": list(THEMES), "description": "A group of related merchants, e.g. 'coffee' covers Tim Hortons, Starbucks, cafés…"},
+                "category": {"type": "string", "description": "Expense/income category (partial match), e.g. 'Food', 'Subscriptions'."},
+                "account": {"type": "string", "description": "Account or card name (partial match), e.g. 'CIBC Visa', 'Simplii', '8138'."},
+                "date_from": {"type": "string", "description": "ISO date, inclusive. Omit for all time."},
+                "date_to": {"type": "string", "description": "ISO date, inclusive. Omit for all time."},
+                "direction": {"type": "string", "enum": ["spending", "income", "all"], "description": "Default 'spending'."},
+                "include_transfers": {"type": "boolean", "description": "Include moves between own accounts / card payments. Default false."},
+                "limit": {"type": "integer", "description": "How many transactions to list (default 40, max 100). Totals always cover all matches."},
+            },
+        },
+    },
+    {
+        "name": "get_accounts_overview",
+        "description": (
+            "The user's bank accounts and credit cards from their statements: which months are covered, and for "
+            "each card the latest statement balance, payments made since, estimated amount owed now, minimum "
+            "payment, due date, credit limit, linked Planner debt and the last few statements (paid / spent / "
+            "interest / balance). Also every recurring charge found (pre-authorized debits, subscriptions, bills) "
+            "with amount, frequency and which account it comes from."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 
     {
         "name": "get_upcoming_payments",
