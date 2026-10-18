@@ -659,7 +659,7 @@ TOOL_SCHEMAS = [
                 "query": {"type": "string", "description": "Words to find in the merchant/description, e.g. 'tim hortons', 'uber', 'amazon'."},
                 "theme": {"type": "string", "enum": list(THEMES), "description": "A group of related merchants, e.g. 'coffee' covers Tim Hortons, Starbucks, cafés…"},
                 "category": {"type": "string", "description": "Expense/income category (partial match), e.g. 'Food', 'Subscriptions'."},
-                "account": {"type": "string", "description": "Account or card name (partial match), e.g. 'CIBC Visa', 'Simplii', '8138'."},
+                "account": {"type": "string", "description": "Account or card name (partial match), e.g. 'CIBC Visa', 'Simplii', '0042'."},
                 "date_from": {"type": "string", "description": "ISO date, inclusive. Omit for all time."},
                 "date_to": {"type": "string", "description": "ISO date, inclusive. Omit for all time."},
                 "direction": {"type": "string", "enum": ["spending", "income", "all"], "description": "Default 'spending'."},
