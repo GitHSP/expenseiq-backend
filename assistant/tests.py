@@ -217,3 +217,36 @@ class SearchThroughChatTests(SearchTransactionsToolTests):
         self.assertIn("CIBC Visa", sent)
         self.assertEqual(res.data["reply"], "You spent **$17.85** on coffee.")
         self.assertEqual(res.data["actions"], [])
+
+
+class GroundingCheckTests(SearchTransactionsToolTests):
+    """Amounts Aurora states must come from this reply's tool results."""
+
+    def chat(self, replies):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        call = NS(type="tool_use", id="t1", name="search_transactions", input={"theme": "coffee"})
+        script = [NS(stop_reason="tool_use", content=[call])] + [
+            NS(stop_reason="end_turn", content=[NS(type="text", text=t)]) for t in replies]
+        client = APIClient()
+        client.force_authenticate(self.user)
+        with mock.patch("assistant.views.anthropic.Anthropic") as A, \
+             mock.patch("assistant.views.settings.ANTHROPIC_API_KEY", "k"):
+            A.return_value.messages.create.side_effect = script
+            res = client.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": "coffee?"}]}, format="json")
+            calls = A.return_value.messages.create.call_count
+        return res.data["reply"], calls
+
+    def test_invented_amount_is_sent_back_and_fixed(self):
+        reply, calls = self.chat(["You spent $27.38 on coffee.", "You spent **$17.85** on coffee ($10.75 on CIBC Visa)."])
+        self.assertEqual(calls, 3)
+        self.assertEqual(reply, "You spent **$17.85** on coffee ($10.75 on CIBC Visa).")
+
+    def test_amount_still_unverified_is_flagged(self):
+        reply, calls = self.chat(["You spent $27.38 on coffee.", "You spent $27.38 on coffee."])
+        self.assertIn("couldn't verify $27.38", reply)
+
+    def test_sums_and_user_amounts_pass(self):
+        reply, calls = self.chat(["Coffee: $17.85 in total, $10.75 + $2.10 + $5.00 = $17.85."])
+        self.assertEqual(calls, 2)
+        self.assertNotIn("verify", reply)

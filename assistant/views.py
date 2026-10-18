@@ -9,6 +9,7 @@
 import json
 import logging
 import re
+from decimal import Decimal
 from datetime import date
 
 import anthropic
@@ -40,6 +41,7 @@ Guidelines:
 - Things that repeat every month (rent, bills, transfers, salary) are recurring payments; anything with a balance being paid down (credit cards, loans, EMIs) is a debt; a checklist item is a one-off for the current month only.
 - Call get_financial_summary when you need context to answer a question (e.g. "how much debt do I have left?", "am I on track?").
 - For any question about where money went, how much was spent on something, at a merchant, in a category or month, or which card/account paid for it, call search_transactions (use `theme` for things like coffee, groceries, gas, dining, delivery, subscriptions; `query` for a specific merchant). For card balances, payments to cards, due dates, statements on file and recurring charges, call get_accounts_overview. Answer from the tool results only; if nothing matches, say so and mention which statements are uploaded.
+- Merchant names: use them exactly as printed on the statement (e.g. "UPG*PAYMENTICO.COM"). Never say what company or service a code stands for unless the user told you or a rule renamed it — if asked, say you can't tell from the statement.
 - Accuracy: every amount, date, merchant and account you state must come from a tool result in THIS reply — copy it exactly, don't estimate, round or recall figures from earlier in the chat. If you need numbers you haven't fetched in this reply, call the tool again. Say which account or card each amount is from. If the user questions a figure, search again and show exactly what came back; if the results were cut short (transactions_shown < count), say so and narrow the search.
 - ACTUAL vs PLANNED: the user's real income, spending and bills come ONLY from their uploaded statements (search_transactions, monthly_review, plan_vs_actual, get_financial_summary's actual_from_statements). Amounts in Planner — recurring payments, checklist items, fixed expenses — are rough plans the user typed in; never present them as what was earned or spent. When asked about income or expenses, give the statement figures (say which months the statements cover); mention planned amounts only as a comparison, labelled "planned". For "did I pay my bills / planned vs actual" call plan_vs_actual.
 - Shared bills: if the user pays rent/utilities/WiFi in full and roommates or friends send their share by e-transfer, save an add_rule with treat_as 'shared' for each person (match the name as it appears on e-transfers - search_transactions with direction 'income' and query 'e-transfer' shows them). Their money counts as income but is reported separately as roommate contributions, and plan_vs_actual shows the user's own share of the shared bills.
@@ -57,6 +59,26 @@ Guidelines:
 """
 
 MAX_TOOL_ROUNDS = 6
+
+# Money amounts in text ("$1,234.56", "14.30"), not percentages ("21.99%").
+MONEY_IN_TEXT = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?![\d%])(?!\s?%)")
+
+
+def _amounts(text):
+    return {Decimal(f"{whole.replace(',', '')}.{cents}") for whole, cents in MONEY_IN_TEXT.findall(str(text))}
+
+
+def unverified_amounts(reply, known):
+    """Amounts in the reply that aren't in this reply's tool results (or the
+    user's message) — nor a sum or difference of two of them."""
+    found = _amounts(reply) - known
+    if not found:
+        return []
+    values = sorted(known)
+    if len(values) <= 400:
+        combos = {a + b for i, a in enumerate(values) for b in values[i:]} | {abs(a - b) for a in values for b in values}
+        found -= combos
+    return sorted(found)
 
 # Backstop for the honesty rule: a reply that says it changed something
 # when no tool actually changed anything gets a visible note.
@@ -109,6 +131,8 @@ class ChatView(APIView):
         tool_ctx = {"last_user_message": last_user_message,
                     "previous_assistant_message": previous_assistant_message, "previewed": set()}
         failures = []   # changes a tool refused, so the reply can't claim them
+        known = _amounts(last_user_message)    # amounts the reply may state: from tools this reply, or the user
+        checked = False
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         system_prompt = SYSTEM_PROMPT.format(today=date.today().isoformat())
@@ -134,6 +158,20 @@ class ChatView(APIView):
                     reply_text = "".join(
                         block.text for block in response.content if block.type == "text"
                     ).strip()
+                    # Every amount must come from this reply's tool results.
+                    # One chance to fix it; after that the user is told.
+                    bad = unverified_amounts(reply_text, known)
+                    if bad and not checked:
+                        checked = True
+                        messages.append({"role": "user", "content": (
+                            "[Automatic check, not from the user] These amounts in your reply don't appear in any "
+                            "tool result from this reply: " + ", ".join(f"${b:,}" for b in bad) + ". Don't state "
+                            "figures from memory or earlier messages. Call the tools to get the real figures and "
+                            "rewrite your whole reply using only amounts they return.")})
+                        continue
+                    if bad:
+                        reply_text += ("\n\n⚠ I couldn't verify " + ", ".join(f"${b:,}" for b in bad[:5]) +
+                                       " against your statements — please double-check on the Accounts page.")
                     if not actions and CLAIMS_CHANGE.search(reply_text):
                         # The model claimed a change that didn't happen. Don't
                         # show that claim — say plainly what happened instead.
@@ -169,10 +207,12 @@ class ChatView(APIView):
                             "message": result.get("message", ""),
                         })
 
+                    content = json.dumps(result, default=str)
+                    known |= {abs(a) for a in _amounts(content)}
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(result, default=str),
+                        "content": content,
                     })
 
                 messages.append({"role": "user", "content": tool_results})
