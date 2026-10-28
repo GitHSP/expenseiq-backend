@@ -729,7 +729,7 @@ TOOL_SCHEMAS = [
             "rename_to": {"type": "string", "description": "Clean name, e.g. 'Amazon'."},
             "category": {"type": "string", "enum": EXPENSE_CATEGORIES + [c for c in INCOME_CATEGORIES if c not in EXPENSE_CATEGORIES]},
             "treat_as": {"type": "string", "enum": ["", "transfer", "spending", "shared"],
-                         "description": "'shared' = money from someone paying their share of bills the user pays in full (a roommate's e-transfer for rent/utilities/WiFi): counted as income, shown separately, and netted off shared bills."},
+                         "description": "'shared' = money from someone paying their share of bills the user pays in full (a roommate's e-transfer for rent/utilities/WiFi): not income - it's taken off the user's spending."},
         }, "required": ["match"]},
     },
     {"name": "list_rules", "description": "List the user's tidy-up rules.", "input_schema": {"type": "object", "properties": {}}},

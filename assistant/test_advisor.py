@@ -208,8 +208,10 @@ class PlanVsActualTests(Base):
         self.assertEqual(r["shared_bills"]["roommates_paid_you"], "1900.00")
         self.assertEqual(r["shared_bills"]["your_share"], "650.00")              # = the planned rent
         review = monthly_review(self.user, month="2026-09")
-        self.assertEqual((review["income"], review["roommate_contributions"], review["income_excluding_contributions"]),
-                         ("4950.00", "1900.00", "3050.00"))
+        self.assertEqual((review["income"], review["roommate_contributions"]), ("3050.00", "1900.00"))   # not income
+        self.assertEqual(Decimal(review["spent_before_roommate_shares"]) - Decimal(review["spent"]), Decimal("1900.00"))
+        self.assertEqual(search_transactions(self.user, direction="income")["total_refunds_or_income"], "3050.00")
+        self.assertEqual(search_transactions(self.user, direction="income", query="alex")["count"], 1)   # still findable
 
     def test_summary_reports_statement_figures(self):
         from .tools import get_financial_summary

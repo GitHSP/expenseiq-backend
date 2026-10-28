@@ -36,7 +36,7 @@ def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
                          f"category {rule.category}" if rule.category else "",
                          "treated as money moving between your own accounts" if rule.treat_as == "transfer" else
                          "counted as real spending/income" if rule.treat_as == "spending" else
-                         "counted as a contribution toward shared bills (income, shown separately)" if rule.treat_as == "shared" else "") if p]
+                         "their share of shared bills (not income; it lowers your spending)" if rule.treat_as == "shared" else "") if p]
     return {"ok": True, "created": created,
             "message": f"Rule for anything mentioning '{rule.match}': {', '.join(parts)}. "
                        f"Applied to {counts['statement_rows']} statement rows; {counts['entries_updated']} entries updated"

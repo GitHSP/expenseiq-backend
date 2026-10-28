@@ -109,21 +109,30 @@ def _card(account):
 class MonthlySummaryView(APIView):
     """GET /api/statements/summary/ — income and spending per month across all
     accounts, from the uploaded statements. Transfers between the user's own
-    accounts (incl. card payments) are left out; card refunds reduce spending."""
+    accounts (incl. card payments) are left out; card refunds reduce spending;
+    what roommates pay toward shared bills reduces spending and isn't income."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from .rules import is_shared, shared_matchers
+        shared = shared_matchers(request.user)
         months = {}
-        rows = (StatementTransaction.objects.filter(user=request.user).exclude(kind="transfer")
-                .values_list("date", "amount", "account__kind"))
-        for d, amount, kind in rows:
-            m = months.setdefault(f"{d.year}-{d.month:02d}", {"income": Decimal("0"), "expenses": Decimal("0")})
-            if amount > 0 and kind != "credit_card":
+        rows = (StatementTransaction.objects.filter(user=request.user)
+                .values_list("date", "amount", "account__kind", "kind", "title", "description"))
+        for d, amount, acct_kind, kind, title, desc in rows:
+            m = months.setdefault(f"{d.year}-{d.month:02d}",
+                                  {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0")})
+            if amount > 0 and acct_kind != "credit_card" and shared and is_shared(f"{title} {desc}", shared):
+                m["shared"] += amount            # a roommate's share of the bills: lowers spending
+            elif kind == "transfer":
+                continue
+            elif amount > 0 and acct_kind != "credit_card":
                 m["income"] += amount
             else:
                 m["expenses"] -= amount          # card refunds (positive) lower spending
-        out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"]),
-                "net": _money(v["income"] - v["expenses"])} for k, v in sorted(months.items())]
+        out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"] - v["shared"]),
+                "net": _money(v["income"] - v["expenses"] + v["shared"]),
+                "shared_by_others": _money(v["shared"])} for k, v in sorted(months.items())]
         total_in = sum((Decimal(m["income"]) for m in out), Decimal("0"))
         total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
         return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),

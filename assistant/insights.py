@@ -144,8 +144,13 @@ def search_transactions(user, query=None, theme=None, category=None, account=Non
         words = [re.escape(w) for w in str(query).split() if w.strip()]
         patterns.append(re.compile(r".*".join(words), re.I))
 
+    from expenses.rules import is_shared, shared_matchers
+    shared = shared_matchers(user)
     rows = []
     for r in _rows(user, d_from, d_to):
+        # Someone's share of the bills isn't income (unless asked about by name).
+        if shared and r["amount"] > 0 and not patterns and is_shared(f"{r['title']} {r['description']}", shared):
+            continue
         if r["transfer"] and not include_transfers:
             continue
         if direction == "spending" and r["amount"] >= 0 and not (r["account_kind"] == "credit_card" and patterns):

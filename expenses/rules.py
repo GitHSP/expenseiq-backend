@@ -4,12 +4,24 @@
 # "Wealthsimple is my own account"): applied to what's already imported and
 # to statement previews, so future imports follow them too.
 
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Q
 
 from activity.context import activity_context
 
 from .models import Expense, Income, MerchantRule, StatementTransaction
+
+
+def shared_matchers(user):
+    """Names whose money is their share of bills the user pays (not income)."""
+    return [r.match.lower() for r in MerchantRule.objects.filter(user=user, treat_as="shared")]
+
+
+def is_shared(text, matchers):
+    text = str(text or "").lower()
+    return any(m in text for m in matchers)
 
 
 def rule_for(rules, *texts):
@@ -35,9 +47,13 @@ def apply_to_preview(user, preview):
             row["expense_category"] = rule.category
         if rule.treat_as == "transfer":
             row["is_transfer"] = True
-        elif rule.treat_as in ("spending", "shared"):
+        elif rule.treat_as == "spending":
             row["is_transfer"] = False
             row["transfer_match"] = None
+        elif rule.treat_as == "shared" and Decimal(str(row.get("signed_amount") or 0)) > 0:
+            # Someone's share of the bills: not income, so not imported as income.
+            row["is_transfer"] = True
+            row["shared"] = True
     return preview
 
 
@@ -63,10 +79,18 @@ def apply_rule(user, rule):
                 changes.update(kind="transfer", expense=None, income=None)
             elif rule.treat_as in ("spending", "shared") and tx.kind == "transfer":
                 changes["kind"] = "skipped"
-            if rule.treat_as == "shared" and tx.amount > 0 and tx.category != "Shared bills":
-                changes["category"] = "Shared bills"
+            if rule.treat_as == "shared" and tx.amount > 0:
+                # Their share of the bills isn't income: drop income entries saved from it.
+                if tx.income is not None:
+                    tx.income.delete()
+                    counts["entries_removed"] += 1
+                    changes["income"] = None
+                if tx.category != "Shared bills":
+                    changes["category"] = "Shared bills"
+                if tx.kind == "income":
+                    changes["kind"] = "skipped"
             if rule.treat_as != "transfer":
-                for entry in (tx.expense, tx.income):
+                for entry in (tx.expense, None if "income" in changes else tx.income):
                     if entry is None:
                         continue
                     fields = []

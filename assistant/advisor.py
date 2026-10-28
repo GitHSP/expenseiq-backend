@@ -53,8 +53,8 @@ def _latest_full_month(user):
 # ─────────────────────────────────────────────
 
 def _shared_rules(user):
-    from expenses.models import MerchantRule
-    return [r.match.lower() for r in MerchantRule.objects.filter(user=user, treat_as="shared")]
+    from expenses.rules import shared_matchers
+    return shared_matchers(user)
 
 
 def _month_figures(user, ym):
@@ -64,12 +64,14 @@ def _month_figures(user, ym):
     cats, merchants, names = defaultdict(lambda: D0), defaultdict(lambda: D0), {}
     interest = fees = D0
     for r in _rows(user, start, end):
+        if (r["amount"] > 0 and r["account_kind"] != "credit_card" and shared
+                and any(m in f"{r['title']} {r['description']}".lower() for m in shared)):
+            contributions += r["amount"]      # their share of shared bills: not income
+            continue
         if r["transfer"]:
             continue
         if r["amount"] > 0 and r["account_kind"] != "credit_card":
             income += r["amount"]
-            if shared and any(m in f"{r['title']} {r['description']}".lower() for m in shared):
-                contributions += r["amount"]
             continue
         value = -r["amount"]                       # card refunds come in negative
         spent += value
@@ -82,7 +84,9 @@ def _month_figures(user, ym):
             interest += value
         elif FEE_RE.search(text):
             fees += value
-    return {"income": income, "spent": spent, "categories": cats, "merchants": merchants, "names": names,
+    # What the user spent themselves: shared bills less what others paid back.
+    return {"income": income, "spent": spent - contributions, "spent_before_shares": spent,
+            "categories": cats, "merchants": merchants, "names": names,
             "interest": interest, "fees": fees, "contributions": contributions}
 
 
@@ -113,7 +117,7 @@ def monthly_review(user, month=None, **kwargs):
         "spent": _money(cur["spent"]), "spent_last_month": _money(before["spent"]),
         "saved": _money(saved),
         "roommate_contributions": _money(cur["contributions"]),
-        "income_excluding_contributions": _money(cur["income"] - cur["contributions"]),
+        "spent_before_roommate_shares": _money(cur["spent_before_shares"]),
         "savings_rate_percent": round(float(saved / cur["income"] * 100), 1) if cur["income"] else None,
         "interest_paid": _money(cur["interest"]), "fees_paid": _money(cur["fees"]),
         "biggest_category_changes": deltas(cur["categories"], before["categories"]),
@@ -532,7 +536,7 @@ def plan_vs_actual(user, month=None, **kwargs):
         "actual_for_those_payments": _money(actual_matched_out),
         "planned_income": _money(sum((Decimal(r["planned"]) for r in in_items), D0)),
         "actual_income_from_statements": _money(cur["income"]),
-        "of_which_roommate_contributions": _money(cur["contributions"]),
+        "roommate_contributions_not_income": _money(cur["contributions"]),
         "actual_spending_from_statements": _money(cur["spent"]),
         "note": "Actual figures come only from uploaded statements. 'Actual spending' is everything spent that month "
                 "(planned or not), excluding transfers between the user's own accounts.",
