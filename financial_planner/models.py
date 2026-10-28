@@ -194,6 +194,11 @@ class RecurringItem(models.Model):
     ]
     frequency   = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default="monthly")
     anchor_date = models.DateField(null=True, blank=True)
+    # Pay that changes every time (hourly work): words from the deposit as the
+    # bank prints it. When set, `amount` is kept at the average of the last
+    # few matching deposits in the uploaded statements.
+    average_from = models.CharField(max_length=100, blank=True, default="")
+    average_of   = models.PositiveSmallIntegerField(default=0)    # how many deposits the average used
     is_auto_debit = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
@@ -264,3 +269,80 @@ class ChecklistItem(models.Model):
     def __str__(self):
         status = "✅" if self.is_completed else "☐"
         return f"{status} {self.label}"
+
+
+class Investment(models.Model):
+    """
+    Savings that grow over years: an insurance policy with a cash value, a
+    chit, or a recurring deposit. Amounts are kept in the investment's own
+    currency (an Indian RD stays in rupees); the app converts for totals.
+    The figures it works out (paid so far, maturity, value) are in
+    financial_planner/investments.py.
+    """
+
+    KIND_CHOICES = [("insurance", "Insurance"), ("chit", "Chit"), ("rd", "Recurring deposit")]
+    FREQUENCY_CHOICES = [("monthly", "Monthly"), ("quarterly", "Quarterly"),
+                         ("half_yearly", "Half-yearly"), ("yearly", "Yearly")]
+    COMPOUNDING_CHOICES = [("quarterly", "Quarterly"), ("monthly", "Monthly"), ("yearly", "Yearly")]
+    DEPOSIT_CHOICES = [("", "Not deposited"), ("chit_company", "With the chit company"), ("bank", "Bank FD")]
+
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="investments")
+    kind       = models.CharField(max_length=10, choices=KIND_CHOICES)
+    name       = models.CharField(max_length=100)
+    provider   = models.CharField(max_length=100, blank=True, default="")    # iA, Equitable, KSFE, SBI...
+    currency   = models.CharField(max_length=3, default="CAD")
+    start_date = models.DateField()
+    # Planner's recurring payment for it (premium, instalment), when there is one.
+    recurring_item = models.ForeignKey(RecurringItem, on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name="investments")
+
+    # Premium (insurance) or monthly instalment (chit, RD), and how often it's paid.
+    payment           = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    payment_frequency = models.CharField(max_length=12, choices=FREQUENCY_CHOICES, default="monthly")
+    rate              = models.DecimalField(max_digits=6, decimal_places=3, default=Decimal("0.000"))  # % a year
+
+    # Insurance
+    policy_type    = models.CharField(max_length=50, blank=True, default="")    # universal life, endowment...
+    paying_years   = models.PositiveSmallIntegerField(null=True, blank=True)   # years premiums are paid
+    term_years     = models.PositiveSmallIntegerField(null=True, blank=True)   # years until it matures
+    sum_assured    = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    current_value  = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)  # cash value
+    current_value_date = models.DateField(null=True, blank=True)
+    maturity_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)  # as quoted
+
+    # Chit (`months` is also an RD's tenure)
+    months       = models.PositiveSmallIntegerField(null=True, blank=True)
+    chit_value   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    prized       = models.BooleanField(default=False)
+    prized_date  = models.DateField(null=True, blank=True)
+    prize_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    deposit_where  = models.CharField(max_length=12, choices=DEPOSIT_CHOICES, blank=True, default="")
+    deposit_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    deposit_rate   = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+    deposit_start  = models.DateField(null=True, blank=True)
+
+    # RD
+    compounding = models.CharField(max_length=10, choices=COMPOUNDING_CHOICES, default="quarterly")
+
+    is_active  = models.BooleanField(default=True)
+    notes      = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["kind", "start_date", "name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_kind_display()})"
+
+
+class InvestmentPayment(models.Model):
+    """One instalment actually paid — a chit's, which changes every month."""
+
+    investment = models.ForeignKey(Investment, on_delete=models.CASCADE, related_name="payments")
+    date       = models.DateField()
+    amount     = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal("0.00"))])
+    note       = models.CharField(max_length=200, blank=True, default="")
+
+    class Meta:
+        ordering = ["date", "id"]

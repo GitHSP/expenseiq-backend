@@ -3,7 +3,9 @@ from django.utils   import timezone
 from expenses.serializers import CURRENCIES, clean_original
 from .models import (
     Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem,
+    Investment, InvestmentPayment,
 )
+from .investments import summarize
 
 
 class DebtSerializer(serializers.ModelSerializer):
@@ -100,11 +102,11 @@ class RecurringItemSerializer(serializers.ModelSerializer):
         model  = RecurringItem
         fields = [
             'id', 'label', 'amount', 'original_amount', 'original_currency', 'due_day', 'category',
-            'frequency', 'anchor_date',
+            'frequency', 'anchor_date', 'average_from', 'average_of',
             'is_auto_debit', 'is_active', 'notes',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'average_of', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         frequency = attrs.get("frequency", getattr(self.instance, "frequency", "monthly"))
@@ -139,3 +141,58 @@ class MonthlyPlanSerializer(serializers.ModelSerializer):
             'checklist_items',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class InvestmentPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = InvestmentPayment
+        fields = ['id', 'date', 'amount', 'note']
+
+
+class InvestmentSerializer(serializers.ModelSerializer):
+    payments = InvestmentPaymentSerializer(many=True, read_only=True)
+    summary  = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Investment
+        fields = [
+            'id', 'kind', 'name', 'provider', 'currency', 'start_date', 'recurring_item',
+            'payment', 'payment_frequency', 'rate',
+            'policy_type', 'paying_years', 'term_years', 'sum_assured',
+            'current_value', 'current_value_date', 'maturity_value',
+            'months', 'chit_value', 'prized', 'prized_date', 'prize_amount',
+            'deposit_where', 'deposit_amount', 'deposit_rate', 'deposit_start',
+            'compounding', 'is_active', 'notes', 'payments', 'summary',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_summary(self, obj):
+        return summarize(obj)
+
+    def validate_currency(self, value):
+        value = (value or "").upper()
+        if value not in CURRENCIES:
+            raise serializers.ValidationError("Unsupported currency.")
+        return value
+
+    def validate_recurring_item(self, value):
+        if value is not None and value.user_id != self.context["request"].user.id:
+            raise serializers.ValidationError("Recurring payment not found.")
+        return value
+
+    def validate(self, attrs):
+        def get(f):
+            return attrs.get(f, getattr(self.instance, f, None))
+        kind = get("kind")
+        if kind in ("rd", "chit") and not get("months"):
+            raise serializers.ValidationError({"months": "How many months does it run?"})
+        if kind == "chit" and not get("chit_value"):
+            raise serializers.ValidationError({"chit_value": "Enter the chit's total value."})
+        if kind == "rd" and not get("payment"):
+            raise serializers.ValidationError({"payment": "Enter the monthly instalment."})
+        if kind == "insurance" and not get("payment"):
+            raise serializers.ValidationError({"payment": "Enter the premium."})
+        if attrs.get("current_value") is not None and not get("current_value_date"):
+            attrs["current_value_date"] = timezone.localdate()
+        return attrs

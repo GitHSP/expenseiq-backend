@@ -223,6 +223,9 @@ class StatementImportView(APIView):
             # Last, so the statement's balance is what the card's debt ends up with.
             debts_updated = [r for r in (sync_debt(a) for a in Account.objects.filter(
                 user=request.user, id__in=getattr(self, "touched_accounts", ()), kind="credit_card")) if r]
+            from financial_planner.services import refresh_average_pay, sync_current_month
+            if refresh_average_pay(request.user):
+                sync_current_month(request.user)
 
         expenses = sum(1 for s in serializers_to_save if isinstance(s, ExpenseSerializer))
         sources = sorted({source for _, source in entries} | {p["filename"] for p in plans}) or ["statement"]

@@ -427,3 +427,31 @@ def rollover_month(user):
 
     new_plan, _ = get_or_create_month_plan(user, next_year, next_month)
     return new_plan, Debt.objects.filter(user=user, is_active=True)
+
+
+def refresh_average_pay(user, only=None):
+    """Keep pay that changes every time at the average of its last few
+    deposits in the uploaded statements (RecurringItem.average_from)."""
+    from django.db.models import Q
+    from expenses.models import StatementTransaction
+    from .models import RecurringItem
+    items = RecurringItem.objects.filter(user=user, category="income").exclude(average_from="")
+    if only is not None:
+        items = items.filter(pk=only.pk)
+    changed = False
+    for rec in items:
+        words = rec.average_from.strip()
+        deposits = list(StatementTransaction.objects.filter(user=user, amount__gt=0).filter(
+            Q(description__icontains=words) | Q(title__icontains=words)).order_by("-date", "-id")[:4])
+        if not deposits:
+            if rec.average_of:
+                rec.average_of = 0
+                rec.save(update_fields=["average_of"])
+            continue
+        average = (sum(d.amount for d in deposits) / len(deposits)).quantize(Decimal("0.01"))
+        if (rec.amount, rec.average_of, rec.original_currency) != (average, len(deposits), ""):
+            rec.amount, rec.average_of = average, len(deposits)
+            rec.original_amount, rec.original_currency = None, ""      # statements are in CAD
+            rec.save(update_fields=["amount", "average_of", "original_amount", "original_currency", "updated_at"])
+            changed = True
+    return changed

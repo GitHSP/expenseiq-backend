@@ -8,16 +8,18 @@ from decimal                    import Decimal
 
 from .models import (
     Debt, EmergencyFund, MonthlyPlan, ChecklistItem, RecurringItem,
+    Investment, InvestmentPayment,
 )
 from .serializers import (
     DebtSerializer, EmergencyFundSerializer, MonthlyPlanSerializer,
     ChecklistItemSerializer, RecurringItemSerializer,
+    InvestmentSerializer, InvestmentPaymentSerializer,
 )
 from .services import (
     toggle_checklist_item, recalculate_avalanche_order,
     generate_checklist, rollover_month,
     get_or_create_current_plan, sync_current_month, delete_recurring_item,
-    delete_debt,
+    delete_debt, refresh_average_pay,
 )
 
 
@@ -68,7 +70,8 @@ class RecurringItemListCreateView(generics.ListCreateAPIView):
         return RecurringItem.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        item = serializer.save(user=self.request.user)
+        refresh_average_pay(self.request.user, only=item)
         sync_current_month(self.request.user)
 
 
@@ -80,7 +83,8 @@ class RecurringItemDetailView(generics.RetrieveUpdateDestroyAPIView):
         return RecurringItem.objects.filter(user=self.request.user)
 
     def perform_update(self, serializer):
-        serializer.save()
+        item = serializer.save()
+        refresh_average_pay(self.request.user, only=item)
         sync_current_month(self.request.user)
 
     def perform_destroy(self, instance):
@@ -252,3 +256,86 @@ class GenerateChecklistView(APIView):
             "items":    ChecklistItemSerializer(created_items, many=True).data,
             "avalanche_target": DebtSerializer(top_debt).data if top_debt else None,
         }, status=status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────
+# INVESTMENTS  (insurance, chits, RDs) and net worth
+# ─────────────────────────────────────────────
+
+class InvestmentListCreateView(generics.ListCreateAPIView):
+    serializer_class   = InvestmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Investment.objects.filter(user=self.request.user).prefetch_related("payments")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class InvestmentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class   = InvestmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Investment.objects.filter(user=self.request.user).prefetch_related("payments")
+
+
+class InvestmentPaymentView(APIView):
+    """A chit's instalments: POST adds one, PATCH/DELETE change one.
+    Each returns the whole investment so its figures refresh."""
+    permission_classes = [IsAuthenticated]
+
+    def _investment(self, request, pk):
+        return get_object_or_404(Investment, pk=pk, user=request.user)
+
+    def _done(self, request, inv):
+        inv = Investment.objects.prefetch_related("payments").get(pk=inv.pk)
+        return Response(InvestmentSerializer(inv, context={"request": request}).data)
+
+    def post(self, request, pk):
+        inv = self._investment(request, pk)
+        s = InvestmentPaymentSerializer(data=request.data)
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        s.save(investment=inv)
+        return self._done(request, inv)
+
+    def patch(self, request, pk, payment_id):
+        inv = self._investment(request, pk)
+        s = InvestmentPaymentSerializer(get_object_or_404(InvestmentPayment, pk=payment_id, investment=inv),
+                                        data=request.data, partial=True)
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        s.save()
+        return self._done(request, inv)
+
+    def delete(self, request, pk, payment_id):
+        inv = self._investment(request, pk)
+        get_object_or_404(InvestmentPayment, pk=payment_id, investment=inv).delete()
+        return self._done(request, inv)
+
+
+class NetWorthView(APIView):
+    """What you own minus what you owe. Bank balances (CAD) come from each
+    chequing/savings account's newest statement; investments are in their
+    own currency, so the app converts them for the total."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from expenses.models import Account, Statement
+        from .investments import summarize
+        banks = []
+        for acc in Account.objects.filter(user=request.user, kind__in=("chequing", "savings")):
+            st = (Statement.objects.filter(account=acc, new_balance__isnull=False)
+                  .order_by("-period_end").first())
+            banks.append({"id": acc.id, "name": acc.name, "currency": "CAD",
+                          "balance": str(st.new_balance) if st else None,
+                          "as_of": st.period_end.isoformat() if st else None})
+        debts = [{"id": d.id, "name": d.name, "currency": "CAD", "balance": str(d.current_balance)}
+                 for d in Debt.objects.filter(user=request.user, is_active=True, current_balance__gt=0)]
+        investments = []
+        for inv in Investment.objects.filter(user=request.user, is_active=True).prefetch_related("payments"):
+            investments.append({"id": inv.id, "name": inv.name, "kind": inv.kind, "currency": inv.currency,
+                                "worth": summarize(inv)["worth"]})
+        return Response({"banks": banks, "debts": debts, "investments": investments})
