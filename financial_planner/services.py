@@ -113,9 +113,29 @@ def recalculate_avalanche_order(user):
 GENERATED_DEBT_CATEGORIES = ("debt_min", "debt_extra")
 
 
+def paydays(rec, year, month):
+    """Dates in the month a weekly/biweekly item comes, counted from its anchor date."""
+    from calendar import monthrange
+    from datetime import date as _date, timedelta
+    step = {"weekly": 7, "biweekly": 14}.get(rec.frequency)
+    if not step or not rec.anchor_date:
+        return []
+    first, last = _date(year, month, 1), _date(year, month, monthrange(year, month)[1])
+    k = -((rec.anchor_date - first).days // step)          # first k with anchor + k*step >= first
+    d = rec.anchor_date + timedelta(days=k * step)
+    out = []
+    while d <= last:
+        if d >= first:
+            out.append(d)
+        d += timedelta(days=step)
+    return out
+
+
 def _generated_key(item):
     """Identify which source a checklist item was generated from (None = manual)."""
     if item.recurring_item_id:
+        if item.recurring_item and item.recurring_item.frequency in ("weekly", "biweekly"):
+            return ("recurring", item.recurring_item_id, item.due_day)     # one per payday
         return ("recurring", item.recurring_item_id)
     if item.category == "savings":
         return ("savings",)
@@ -124,7 +144,7 @@ def _generated_key(item):
     return None
 
 
-def _desired_items(user):
+def _desired_items(user, year=None, month=None):
     """Return [(key, fields)] for everything this month's checklist should contain."""
     from .models import Debt, RecurringItem
 
@@ -142,12 +162,17 @@ def _desired_items(user):
         )))
 
     for rec in RecurringItem.objects.filter(user=user, is_active=True):
-        desired.append((("recurring", rec.id), dict(
-            label=rec.label, amount=rec.amount, due_day=rec.due_day,
-            original_amount=rec.original_amount, original_currency=rec.original_currency,
-            category=rec.category, is_auto_debit=rec.is_auto_debit,
-            recurring_item=rec,
-        )))
+        common = dict(amount=rec.amount, original_amount=rec.original_amount,
+                      original_currency=rec.original_currency, category=rec.category,
+                      is_auto_debit=rec.is_auto_debit, recurring_item=rec)
+        if rec.frequency in ("weekly", "biweekly") and year and month:
+            # One item per payday that month (2 or 3 for biweekly).
+            for d in paydays(rec, year, month):
+                desired.append((("recurring", rec.id, d.day), dict(
+                    label=f"{rec.label} ({d:%b} {d.day})", due_day=d.day, **common)))
+            continue
+        label = f"{rec.label} (estimate)" if rec.frequency == "varies" else rec.label
+        desired.append((("recurring", rec.id), dict(label=label, due_day=rec.due_day, **common)))
 
     debts = list(
         Debt.objects
@@ -223,7 +248,7 @@ def sync_month_checklist(plan):
     """
     from .models import ChecklistItem
 
-    desired, top_debt = _desired_items(plan.user)
+    desired, top_debt = _desired_items(plan.user, plan.year, plan.month)
 
     existing = {}
     for item in plan.checklist_items.all():
@@ -238,6 +263,8 @@ def sync_month_checklist(plan):
     result = []
     wanted_keys = set()
     for sort_order, (key, fields) in enumerate(desired, start=1):
+        if fields["category"] == "income":
+            continue      # income counts toward the plan's totals but isn't a checklist item
         wanted_keys.add(key)
         item = existing.get(key)
         if item is None:
@@ -250,8 +277,8 @@ def sync_month_checklist(plan):
         result.append(item)
 
     for key, item in existing.items():
-        if key not in wanted_keys and not item.is_completed:
-            item.delete()
+        if key not in wanted_keys and (not item.is_completed or item.category == "income"):
+            item.delete()   # (ticked income goes too: income left the checklist, ticking it did nothing)
 
     _update_plan_totals(plan, desired)
     return result, top_debt

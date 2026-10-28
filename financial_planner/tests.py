@@ -47,7 +47,7 @@ class MonthlyChecklistTests(TestCase):
         self.assertFalse(rolled_over)
         self.assertEqual(self.labels(plan), [
             "Card minimum payment", "Card — EXTRA avalanche payment (all surplus)",
-            "Phone EMI payment", "Rent", "Salary",
+            "Phone EMI payment", "Rent",   # income counts toward totals, not the checklist
         ])
         self.card.refresh_from_db()
         self.assertEqual(self.card.current_balance, Decimal("1000.00"))
@@ -285,3 +285,63 @@ class DebtOriginalCurrencyTests(TestCase):
         self.assertEqual(res.status_code, 200, res.data)
         d = self.debt()
         self.assertEqual((d.original_currency, d.original_current_balance), ("", None))
+
+
+class RecurringFrequencyTests(TestCase):
+    """Biweekly/weekly pay gets one checklist item per payday; 'varies' is an estimate."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        self.user = get_user_model().objects.create_user(email="rf@example.test", username="rf", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def add(self, **data):
+        res = self.client.post("/api/fp/recurring/", {"category": "income", **data}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        return res.data
+
+    def test_paydays(self):
+        from datetime import date
+        from types import SimpleNamespace as NS
+        from financial_planner.services import paydays
+        rec = NS(frequency="biweekly", anchor_date=date(2026, 10, 2))      # a Friday
+        self.assertEqual([d.day for d in paydays(rec, 2026, 10)], [2, 16, 30])   # 3 paydays
+        self.assertEqual([d.day for d in paydays(rec, 2026, 11)], [13, 27])
+        self.assertEqual([d.day for d in paydays(rec, 2026, 9)], [4, 18])        # before the anchor too
+        self.assertEqual(len(paydays(NS(frequency="weekly", anchor_date=date(2026, 10, 2)), 2026, 10)), 5)
+
+    def test_biweekly_needs_a_payday(self):
+        res = self.client.post("/api/fp/recurring/", {"label": "Pay", "amount": "1200", "category": "income",
+                                                      "frequency": "biweekly"}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_checklist_and_planned_income(self):
+        from financial_planner.services import get_or_create_month_plan
+        self.add(label="Job pay", amount="1200", frequency="biweekly", anchor_date="2026-10-02")
+        self.add(label="Cleaning", amount="600", frequency="monthly", due_day=1)
+        self.add(label="Tips", amount="300", frequency="varies")
+        plan = get_or_create_month_plan(self.user, 2026, 10)
+        plan = plan[0] if isinstance(plan, tuple) else plan
+        self.assertFalse(plan.checklist_items.filter(category="income").exists())   # income isn't a to-do
+        plan.refresh_from_db()
+        self.assertEqual(plan.total_income, Decimal("4500.00"))          # 3 paydays × 1,200 + 600 + 300
+        nov = get_or_create_month_plan(self.user, 2026, 11)
+        nov = nov[0] if isinstance(nov, tuple) else nov
+        nov.refresh_from_db()
+        self.assertEqual(nov.total_income, Decimal("3300.00"))           # 2 paydays in November
+        from assistant.advisor_income import planned_income_rows
+        rows = {r["label"]: r["amount"] for r in planned_income_rows(self.user, 2026, 10)}
+        self.assertEqual(rows["Job pay"], Decimal("3600.00"))
+
+    def test_old_ticked_income_leaves_the_checklist(self):
+        from financial_planner.models import ChecklistItem, RecurringItem
+        from financial_planner.services import get_or_create_month_plan, sync_month_checklist
+        pay = self.add(label="Cleaning", amount="600", frequency="monthly", due_day=1)
+        plan = get_or_create_month_plan(self.user, 2026, 10)
+        plan = plan[0] if isinstance(plan, tuple) else plan
+        ChecklistItem.objects.create(monthly_plan=plan, label="Cleaning", amount=600, category="income",   # from before
+                                     recurring_item=RecurringItem.objects.get(pk=pay["id"]), is_completed=True)
+        sync_month_checklist(plan)
+        self.assertFalse(plan.checklist_items.filter(category="income").exists())

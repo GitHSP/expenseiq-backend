@@ -396,9 +396,18 @@ def _planned_items(user, ym):
     y, m = (int(x) for x in ym.split("-"))
     plan = MonthlyPlan.objects.filter(user=user, year=y, month=m).first()
     if plan:
-        items = [{"label": i.label, "amount": i.amount or D0, "category": i.category, "due_day": i.due_day,
-                  "debt": i.linked_debt, "done": i.is_completed}
-                 for i in ChecklistItem.objects.filter(monthly_plan=plan).select_related("linked_debt")]
+        items, by_source = [], {}
+        for i in ChecklistItem.objects.filter(monthly_plan=plan).select_related("linked_debt", "recurring_item"):
+            if i.recurring_item_id and i.recurring_item_id in by_source:      # another payday of the same pay
+                by_source[i.recurring_item_id]["amount"] += i.amount or D0
+                continue
+            row = {"label": i.recurring_item.label if i.recurring_item_id else i.label, "amount": i.amount or D0,
+                   "category": i.category, "due_day": i.due_day, "debt": i.linked_debt, "done": i.is_completed}
+            items.append(row)
+            if i.recurring_item_id:
+                by_source[i.recurring_item_id] = row
+        from .advisor_income import planned_income_rows
+        items = [r for r in items if r["category"] != "income"] + planned_income_rows(user, y, m)
         if items:
             return items, "checklist"
     return ([{"label": r.label, "amount": r.amount, "category": r.category, "due_day": r.due_day, "debt": None, "done": None}

@@ -183,6 +183,17 @@ class RecurringItem(models.Model):
     # the app displays that currency. `amount` is always the CAD value.
     original_amount   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     original_currency = models.CharField(max_length=3, blank=True, default="")
+    # How often it comes: monthly on due_day, every 1 or 2 weeks counted
+    # from anchor_date (a known payday), or a monthly estimate that varies
+    # (tips). The amount is per occurrence (per pay for weekly/biweekly).
+    FREQUENCY_CHOICES = [
+        ("monthly",  "Monthly"),
+        ("biweekly", "Every 2 weeks"),
+        ("weekly",   "Weekly"),
+        ("varies",   "Varies (monthly estimate)"),
+    ]
+    frequency   = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default="monthly")
+    anchor_date = models.DateField(null=True, blank=True)
     is_auto_debit = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)

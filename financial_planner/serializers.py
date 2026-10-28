@@ -100,12 +100,17 @@ class RecurringItemSerializer(serializers.ModelSerializer):
         model  = RecurringItem
         fields = [
             'id', 'label', 'amount', 'original_amount', 'original_currency', 'due_day', 'category',
+            'frequency', 'anchor_date',
             'is_auto_debit', 'is_active', 'notes',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def validate(self, attrs):
+        frequency = attrs.get("frequency", getattr(self.instance, "frequency", "monthly"))
+        anchor = attrs.get("anchor_date", getattr(self.instance, "anchor_date", None))
+        if frequency in ("weekly", "biweekly") and not anchor:
+            raise serializers.ValidationError({"anchor_date": "Give one recent payday so the paydays can be worked out."})
         return clean_original(attrs, self.instance)
 
     def validate_due_day(self, value):

@@ -435,23 +435,33 @@ def list_recurring_payments(user, **kwargs):
 
 
 def add_recurring_payment(user, label, amount, due_day=None, category="fixed_expense",
-                          is_auto_debit=False, notes="", **kwargs):
+                          is_auto_debit=False, notes="", frequency="monthly", anchor_date=None, **kwargs):
     try:
         amt = _to_decimal(amount)
     except ValueError as e:
         return {"ok": False, "message": str(e)}
+    if frequency not in ("monthly", "biweekly", "weekly", "varies"):
+        frequency = "monthly"
+    anchor = None
+    if frequency in ("weekly", "biweekly"):
+        try:
+            anchor = datetime.strptime(str(anchor_date), "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "For weekly or every-2-weeks pay, ask for one recent payday (YYYY-MM-DD)."}
     if RecurringItem.objects.filter(user=user, label__iexact=label).exists():
         return {"ok": False, "message": f"A recurring payment named '{label}' already exists. Use update_recurring_payment instead."}
 
     item = RecurringItem.objects.create(
         user=user, label=label, amount=amt, due_day=due_day,
         category=category if category in RECURRING_CATEGORIES else "fixed_expense",
-        is_auto_debit=bool(is_auto_debit), notes=notes or "",
+        is_auto_debit=bool(is_auto_debit), notes=notes or "", frequency=frequency, anchor_date=anchor,
     )
     sync_current_month(user)
+    how = {"monthly": "every month", "biweekly": "every 2 weeks", "weekly": "every week",
+           "varies": "a month (estimate; it varies)"}[frequency]
     return {
         "ok": True,
-        "message": f"Added recurring {'income' if item.category == 'income' else 'payment'} '{item.label}' — ${item.amount} every month.",
+        "message": f"Added recurring {'income' if item.category == 'income' else 'payment'} '{item.label}' — ${item.amount} {how}.",
         "recurring_payment": RecurringItemSerializer(item).data,
     }
 
@@ -1081,7 +1091,10 @@ TOOL_SCHEMAS = [
             "type": "object",
             "properties": {
                 "label": {"type": "string", "description": "Name of the payment or income source, e.g. 'Rent', 'Salary'."},
-                "amount": {"type": "number", "description": "Monthly amount."},
+                "amount": {"type": "number", "description": "Amount each time (per pay for weekly/biweekly; a monthly estimate for 'varies')."},
+                "frequency": {"type": "string", "enum": ["monthly", "biweekly", "weekly", "varies"],
+                              "description": "How often: monthly (default), biweekly = every 2 weeks, weekly, or varies (e.g. tips; give a monthly estimate)."},
+                "anchor_date": {"type": "string", "description": "For weekly/biweekly: one recent payday, YYYY-MM-DD."},
                 "due_day": {"type": "integer", "description": "Day of the month it's due/received (1-31)."},
                 "category": {"type": "string", "enum": RECURRING_CATEGORIES, "description": "income for income sources; auto_debit for automatic withdrawals; transfer for money transfers; temp_payment for payments that will end; otherwise fixed_expense."},
                 "is_auto_debit": {"type": "boolean", "description": "True if it's withdrawn automatically."},
