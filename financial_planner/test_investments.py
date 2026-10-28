@@ -194,3 +194,17 @@ class InsuranceCostTests(TestCase):
         self.assertEqual(summarize(pol, today=date(2026, 1, 15))["worth"], "3000.00")
         pol.surrender_charge = None
         self.assertEqual(summarize(pol, today=date(2026, 1, 15))["worth"], "4000.00")
+
+    def test_expected_value_points(self):
+        user = make_user("exp@example.test")
+        pol = Investment.objects.create(user=user, kind="insurance", name="UL", currency="CAD",
+                                        start_date=date(2020, 1, 1), payment=Decimal("100"), rate=Decimal("2"),
+                                        term_years=20, current_value=Decimal("4000"),
+                                        current_value_date=date(2026, 1, 1), yearly_cost=Decimal("360"))
+        s = summarize(pol, today=date(2026, 1, 15))
+        self.assertEqual(s["expected_rates"], ["0", "2", "4"])
+        self.assertEqual([p["date"] for p in s["expected"]], ["2027-01-01", "2031-01-01", "2036-01-01", "2040-01-01"])
+        self.assertEqual(s["expected"][0]["values"][0], "4840.00")      # 0%: + 12 × (100 − 30)
+        low, mid, high = (Decimal(v) for v in s["expected"][-1]["values"])
+        self.assertTrue(low < mid < high)
+        self.assertEqual(s["monthly_split"], {"premium": "100.00", "cost": "30.00", "invested": "70.00"})

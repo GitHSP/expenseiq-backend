@@ -60,7 +60,7 @@ def _insurance(inv, today):
     def premium_month(m):
         return m % step == 0 and (total_periods is None or m // step < total_periods)
 
-    def grow(value, from_month, to_month):
+    def grow(value, from_month, to_month, g=g):
         # value at the start of from_month (its premium included) -> to_month
         for m in range(from_month + 1, to_month + 1):
             value = max(value * g - monthly_cost, Decimal(0))
@@ -80,6 +80,27 @@ def _insurance(inv, today):
     months_left = months_between(today, maturity_date) if maturity_date else None
     charge = Decimal(inv.surrender_charge) if inv.surrender_charge is not None else None
     surrender_value = max(value_now - charge, Decimal(0)) if charge is not None else value_now
+
+    # Expected value: the fund at a few points ahead, at the expected return
+    # and 2% either side (index-linked returns aren't guaranteed).
+    rate = Decimal(inv.rate)
+    rates = sorted({max(rate - 2, Decimal(0)), rate, rate + 2})
+    points = [elapsed + 12, elapsed + 60, elapsed + 120]
+    if inv.term_years and inv.term_years * 12 > points[-1]:
+        points.append(inv.term_years * 12)
+    expected = []
+    if started:
+        for at in points:
+            row = {"date": add_months(inv.start_date, at).isoformat(),
+                   "paid": str(_money(pay * min(at // step + 1, total_periods or 10 ** 6))), "values": []}
+            for r in rates:
+                gr = (1 + r / 100) ** (Decimal(1) / 12)
+                row["values"].append(str(_money(grow(base, base_month, at, g=gr))))
+            expected.append(row)
+    per_month = pay / step
+    split = ({"premium": str(_money(per_month)), "cost": str(_money(monthly_cost)),
+              "invested": str(_money(max(per_month - monthly_cost, Decimal(0))))}
+             if inv.yearly_cost else None)
     return {
         "paid_so_far": pay * paid,
         "payments_made": paid,
@@ -96,6 +117,9 @@ def _insurance(inv, today):
         "surrender_charge": charge,
         "surrender_value": surrender_value,           # what cancelling now would pay
         "yearly_cost": inv.yearly_cost,
+        "expected_rates": [str(r.normalize()) for r in rates],
+        "expected": expected,
+        "monthly_split": split,
         "worth": surrender_value,
     }
 
