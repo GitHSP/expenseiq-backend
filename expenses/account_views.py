@@ -311,3 +311,33 @@ class RecurringChargesView(APIView):
             "pre_authorized_count": sum(1 for i in active if i["pre_authorized"]),
             "by_account": {str(k): _money(v) for k, v in by_account.items()},
         })
+
+
+class RuleListView(APIView):
+    """GET/POST /api/statements/rules/ — the user's tidy-up rules (the same ones
+    Aurora sets), so they can be managed without her."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import MerchantRule
+        return Response({"rules": [{"id": r.id, "match": r.match, "rename_to": r.rename_to, "category": r.category,
+                                    "treat_as": r.treat_as} for r in MerchantRule.objects.filter(user=request.user)]})
+
+    def post(self, request):
+        from assistant.personal import add_rule
+        d = request.data
+        result = add_rule(request.user, d.get("match"), rename_to=d.get("rename_to") or "",
+                          category=d.get("category") or "", treat_as=d.get("treat_as") or "")
+        return Response(result, status=status.HTTP_201_CREATED if result.get("ok") else status.HTTP_400_BAD_REQUEST)
+
+
+class RuleDetailView(APIView):
+    """DELETE /api/statements/rules/<id>/"""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        from .models import MerchantRule
+        deleted, _ = MerchantRule.objects.filter(user=request.user, pk=pk).delete()
+        if not deleted:
+            return Response({"error": "Rule not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)

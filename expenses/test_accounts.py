@@ -445,3 +445,24 @@ class CardDebtTests(TestCase):
         }]}, format="json")
         data = self.client.get("/api/statements/summary/").data
         self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00", "shared_by_others": "0.00"}])
+
+
+class RuleApiTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email="ru@example.test", username="ru", password="x-Test-12345")
+        self.other = User.objects.create_user(email="ru2@example.test", username="ru2", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_add_list_delete_and_privacy(self):
+        res = self.client.post("/api/statements/rules/", {"match": "alex", "treat_as": "shared"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        rules = self.client.get("/api/statements/rules/").data["rules"]
+        self.assertEqual([(r["match"], r["treat_as"]) for r in rules], [("alex", "shared")])
+        self.assertEqual(self.client.post("/api/statements/rules/", {"match": "ab"}, format="json").status_code, 400)
+        other = APIClient()
+        other.force_authenticate(self.other)
+        self.assertEqual(other.get("/api/statements/rules/").data["rules"], [])
+        self.assertEqual(other.delete(f"/api/statements/rules/{rules[0]['id']}/").status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/statements/rules/{rules[0]['id']}/").status_code, 204)
