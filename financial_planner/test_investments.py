@@ -175,3 +175,22 @@ class AveragePayTests(TestCase):
         res = self.client.get("/api/fp/net-worth/")
         self.assertEqual(res.data["banks"][0]["balance"], "1500.00")
         self.assertEqual(res.data["banks"][0]["as_of"], "2026-09-30")
+
+
+class InsuranceCostTests(TestCase):
+    def test_yearly_cost_and_surrender_charge(self):
+        user = make_user("cost@example.test")
+        pol = Investment.objects.create(user=user, kind="insurance", name="UL", currency="CAD",
+                                        start_date=date(2020, 1, 1), payment=Decimal("100"), rate=Decimal("0"),
+                                        term_years=7, current_value=Decimal("4000"),
+                                        current_value_date=date(2026, 1, 1), yearly_cost=Decimal("360"),
+                                        surrender_charge=Decimal("4500"))
+        s = summarize(pol, today=date(2026, 1, 15))
+        self.assertEqual(s["value_now"], "4000.00")
+        self.assertEqual(s["surrender_value"], "0.00")              # the charge is more than the fund
+        self.assertEqual(s["worth"], "0.00")
+        self.assertEqual(s["projected_maturity"], "4840.00")       # + 12 × (100 premium − 30 cost)
+        pol.surrender_charge = Decimal("1000")
+        self.assertEqual(summarize(pol, today=date(2026, 1, 15))["worth"], "3000.00")
+        pol.surrender_charge = None
+        self.assertEqual(summarize(pol, today=date(2026, 1, 15))["worth"], "4000.00")

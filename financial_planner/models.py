@@ -309,6 +309,10 @@ class Investment(models.Model):
     current_value  = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)  # cash value
     current_value_date = models.DateField(null=True, blank=True)
     maturity_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)  # as quoted
+    # From the yearly statement: what comes out of the fund each year (cost of
+    # insurance + policy fee + premium tax), and the charge for cancelling now.
+    yearly_cost      = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    surrender_charge = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 
     # Chit (`months` is also an RD's tenure)
     months       = models.PositiveSmallIntegerField(null=True, blank=True)

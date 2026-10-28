@@ -159,7 +159,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'id', 'kind', 'name', 'provider', 'currency', 'start_date', 'recurring_item',
             'payment', 'payment_frequency', 'rate',
             'policy_type', 'paying_years', 'term_years', 'sum_assured',
-            'current_value', 'current_value_date', 'maturity_value',
+            'current_value', 'current_value_date', 'maturity_value', 'yearly_cost', 'surrender_charge',
             'months', 'chit_value', 'prized', 'prized_date', 'prize_amount',
             'deposit_where', 'deposit_amount', 'deposit_rate', 'deposit_start',
             'compounding', 'is_active', 'notes', 'payments', 'summary',
