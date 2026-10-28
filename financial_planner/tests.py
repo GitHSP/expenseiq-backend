@@ -233,3 +233,55 @@ class ImportPlannerCommandTests(TestCase):
         out = self.run_import({"recurring": [{"label": "Rent", "amount": 650}]}, "--dry-run")
         self.assertIn("Dry run", out)
         self.assertFalse(RecurringItem.objects.exists())
+
+
+class DebtOriginalCurrencyTests(TestCase):
+    """A loan paid in INR keeps its rupee amounts as typed and follows interest and payments."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        self.user = get_user_model().objects.create_user(email="do@example.test", username="do", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        res = self.client.post("/api/fp/debts/", {
+            "name": "Education Loan", "debt_type": "loan", "current_balance": "4426.25", "annual_interest_rate": "12",
+            "minimum_payment": "442.63", "original_currency": "INR", "original_current_balance": "300000",
+            "original_minimum_payment": "30000"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.debt_id = res.data["id"]
+
+    def debt(self):
+        from financial_planner.models import Debt
+        return Debt.objects.get(id=self.debt_id)
+
+    def test_kept_as_typed(self):
+        d = self.debt()
+        self.assertEqual((d.original_currency, d.original_current_balance, d.original_minimum_payment),
+                         ("INR", Decimal("300000.00"), Decimal("30000.00")))
+
+    def test_interest_moves_the_rupee_balance_too(self):
+        from financial_planner.services import _apply_monthly_interest
+        _apply_monthly_interest(self.user, 1)
+        d = self.debt()
+        self.assertEqual(d.current_balance, Decimal("4470.51"))           # + 1% interest
+        self.assertEqual(d.original_current_balance, Decimal("303000.00"))  # same 1%, in rupees
+
+    def test_checklist_payment_in_rupees(self):
+        from financial_planner.services import get_or_create_month_plan, toggle_checklist_item
+        from datetime import date
+        today = date.today()
+        plan = get_or_create_month_plan(self.user, today.year, today.month)
+        plan = plan[0] if isinstance(plan, tuple) else plan
+        item = plan.checklist_items.get(linked_debt_id=self.debt_id, category="debt_min")
+        self.assertEqual((item.original_amount, item.original_currency), (Decimal("30000.00"), "INR"))
+        toggle_checklist_item(item)
+        d = self.debt()
+        self.assertEqual(d.current_balance, Decimal("3983.62"))
+        self.assertEqual(d.original_current_balance, Decimal("270000.00"))   # 300,000 - 30,000
+
+    def test_editing_back_to_cad_clears(self):
+        res = self.client.patch(f"/api/fp/debts/{self.debt_id}/", {"current_balance": "100", "original_currency": ""}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        d = self.debt()
+        self.assertEqual((d.original_currency, d.original_current_balance), ("", None))

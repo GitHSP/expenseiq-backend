@@ -35,6 +35,10 @@ class Expense(models.Model):
     date       = models.DateField()
     tags       = models.JSONField(default=list, blank=True)
     notes      = models.TextField(blank=True, default='')
+    # What the user typed when it wasn't CAD (e.g. ₹7,000): shown as-is when
+    # the app displays that currency. `amount` is always the CAD value.
+    original_amount   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_currency = models.CharField(max_length=3, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -61,6 +65,10 @@ class Income(models.Model):
     category   = models.CharField(max_length=50, choices=CATEGORIES)
     date       = models.DateField()
     notes      = models.TextField(blank=True, default='')
+    # What the user typed when it wasn't CAD (e.g. ₹7,000): shown as-is when
+    # the app displays that currency. `amount` is always the CAD value.
+    original_amount   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_currency = models.CharField(max_length=3, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

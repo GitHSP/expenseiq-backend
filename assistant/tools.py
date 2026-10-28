@@ -229,6 +229,7 @@ def update_expense(user, title, amount=None, category=None, date=None, notes=Non
     if amount is not None:
         try:
             expense.amount = _to_decimal(amount)
+            expense.original_amount, expense.original_currency = None, ""   # now a CAD amount
         except ValueError as e:
             return {"ok": False, "message": str(e)}
     if category:
@@ -465,6 +466,7 @@ def update_recurring_payment(user, label, new_label=None, amount=None, due_day=N
     try:
         if amount is not None:
             item.amount = _to_decimal(amount)
+            item.original_amount, item.original_currency = None, ""   # now a CAD amount
     except ValueError as e:
         return {"ok": False, "message": str(e)}
     if new_label:

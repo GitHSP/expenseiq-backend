@@ -29,6 +29,15 @@ class Debt(models.Model):
     paid_off_date = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
+    # A debt the user pays in another currency (e.g. an education loan in
+    # INR): the amounts as they typed them. The CAD fields above stay the
+    # ones totals and interest use; when those change (interest, a payment,
+    # a statement) the originals change by the same proportion.
+    original_currency        = models.CharField(max_length=3, blank=True, default="")
+    original_current_balance = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_minimum_payment = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_credit_limit    = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -38,6 +47,36 @@ class Debt(models.Model):
 
     def __str__(self):
         return f"{self.name} — ${self.current_balance}"
+
+    ORIGINAL_FIELDS = ("current_balance", "minimum_payment", "credit_limit")
+
+    def save(self, *args, **kwargs):
+        # CAD amounts changed without new originals (interest, a ticked
+        # payment, a statement): move the originals by the same proportion.
+        if self.pk and self.original_currency and not getattr(self, "_originals_given", False):
+            old = type(self).objects.filter(pk=self.pk).values(
+                *self.ORIGINAL_FIELDS, *(f"original_{f}" for f in self.ORIGINAL_FIELDS)).first()
+            if old:
+                rate = (old["original_current_balance"] / old["current_balance"]
+                        if old["current_balance"] and old["original_current_balance"] is not None else None)
+                touched = []
+                for f in self.ORIGINAL_FIELDS:
+                    new, was, orig = getattr(self, f), old[f], old[f"original_{f}"]
+                    if new == was:
+                        continue
+                    if new is None:
+                        value = None
+                    elif was and orig is not None:
+                        value = (orig * Decimal(new) / Decimal(was)).quantize(Decimal("0.01"))
+                    elif rate is not None:
+                        value = (Decimal(new) * rate).quantize(Decimal("0.01"))
+                    else:
+                        continue
+                    setattr(self, f"original_{f}", value)
+                    touched.append(f"original_{f}")
+                if touched and kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = list(set(kwargs["update_fields"]) | set(touched))
+        super().save(*args, **kwargs)
 
     @property
     def monthly_interest_rate(self):
@@ -140,6 +179,10 @@ class RecurringItem(models.Model):
     amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0.00"))])
     due_day = models.PositiveSmallIntegerField(null=True, blank=True)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="fixed_expense")
+    # What the user typed when it wasn"t CAD (e.g. ₹7,000): shown as-is when
+    # the app displays that currency. `amount` is always the CAD value.
+    original_amount   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_currency = models.CharField(max_length=3, blank=True, default="")
     is_auto_debit = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
@@ -175,6 +218,10 @@ class ChecklistItem(models.Model):
 
     label = models.CharField(max_length=200)  # e.g. "Pay CIBC minimum $71.03"
     amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # What the user typed when it wasn"t CAD (e.g. ₹7,000): shown as-is when
+    # the app displays that currency. `amount` is always the CAD value.
+    original_amount   = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    original_currency = models.CharField(max_length=3, blank=True, default="")
     due_day = models.PositiveSmallIntegerField(null=True, blank=True)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
     is_auto_debit = models.BooleanField(default=False)  # triggers ⚠️ warning

@@ -631,3 +631,43 @@ class FriendlyErrorTests(TestCase):
     def test_non_statement_text_file(self):
         with self.assertRaisesRegex(StatementError, "doesn't look like a bank statement"):
             parse_statement("notes.txt", b"just some notes, not a statement")
+
+
+class OriginalCurrencyTests(TestCase):
+    """₹7,000 typed in INR is kept as typed next to its CAD amount."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="oc@example.test", username="oc", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_expense_keeps_what_was_typed(self):
+        res = self.client.post("/api/expenses/", {"title": "Abroad", "amount": "103.29", "original_amount": "7000",
+                                                  "original_currency": "inr", "category": "Abroad Expense",
+                                                  "date": "2026-10-28"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual((res.data["original_amount"], res.data["original_currency"]), ("7000.00", "INR"))
+        # A CAD-only change (e.g. from Aurora) drops the old original.
+        res = self.client.patch(f"/api/expenses/{res.data['id']}/", {"amount": "110.00"}, format="json")
+        self.assertEqual((res.data["original_amount"], res.data["original_currency"]), (None, ""))
+
+    def test_cad_or_bad_currency(self):
+        res = self.client.post("/api/income/", {"title": "Pay", "amount": "100", "original_amount": "100",
+                                                "original_currency": "CAD", "category": "Salary", "date": "2026-10-28"}, format="json")
+        self.assertEqual((res.data["original_amount"], res.data["original_currency"]), (None, ""))
+        res = self.client.post("/api/income/", {"title": "Pay", "amount": "100", "original_amount": "100",
+                                                "original_currency": "XYZ", "category": "Salary", "date": "2026-10-28"}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_recurring_original_reaches_the_checklist(self):
+        from financial_planner.services import get_or_create_month_plan
+        res = self.client.post("/api/fp/recurring/", {"label": "RD-Abroad", "amount": "103.29", "original_amount": "7000",
+                                                      "original_currency": "INR", "category": "temp_payment", "due_day": 12},
+                               format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        today = date.today()
+        plan = get_or_create_month_plan(self.user, today.year, today.month)
+        if isinstance(plan, tuple):
+            plan = plan[0]
+        item = plan.checklist_items.get(label="RD-Abroad")
+        self.assertEqual((item.original_amount, item.original_currency), (Decimal("7000.00"), "INR"))

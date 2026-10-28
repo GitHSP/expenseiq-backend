@@ -56,6 +56,11 @@ def toggle_checklist_item(item):
                 Decimal("0.00"),
                 debt.current_balance - reduction
             )
+            if (debt.original_currency and item.original_currency == debt.original_currency
+                    and item.original_amount is not None and debt.original_current_balance is not None):
+                # Paid in the debt's own currency: take off exactly that (₹30,000).
+                debt.original_current_balance = max(Decimal("0.00"), debt.original_current_balance - item.original_amount)
+                debt._originals_given = True
             if debt.current_balance == Decimal("0.00"):
                 debt.is_active = False
                 debt.paid_off_date = date.today()
@@ -139,6 +144,7 @@ def _desired_items(user):
     for rec in RecurringItem.objects.filter(user=user, is_active=True):
         desired.append((("recurring", rec.id), dict(
             label=rec.label, amount=rec.amount, due_day=rec.due_day,
+            original_amount=rec.original_amount, original_currency=rec.original_currency,
             category=rec.category, is_auto_debit=rec.is_auto_debit,
             recurring_item=rec,
         )))
@@ -153,6 +159,10 @@ def _desired_items(user):
         desired.append((("debt_min", debt.id), dict(
             label=f"{debt.name} {suffix}",
             amount=min(debt.minimum_payment, debt.current_balance),
+            original_amount=(min(debt.original_minimum_payment, debt.original_current_balance)
+                             if debt.original_currency and debt.original_minimum_payment is not None
+                             and debt.original_current_balance is not None else None),
+            original_currency=debt.original_currency if debt.original_minimum_payment is not None else "",
             due_day=debt.due_day, category="debt_min",
             is_auto_debit=False, linked_debt=debt,
         )))
@@ -263,9 +273,16 @@ def _apply_monthly_interest(user, months, label=""):
         for debt in debts:
             if months <= 0 or debt.annual_interest_rate <= 0 or debt.id in from_statements:
                 continue
+            fields = ["current_balance", "updated_at"]
             for _ in range(months):
                 debt.current_balance += (debt.current_balance * debt.monthly_interest_rate).quantize(Decimal("0.01"))
-            debt.save(update_fields=["current_balance", "updated_at"])
+                if debt.original_currency and debt.original_current_balance is not None:
+                    # Same interest on the balance in the currency it's paid in.
+                    debt.original_current_balance += (debt.original_current_balance * debt.monthly_interest_rate).quantize(Decimal("0.01"))
+            if debt.original_currency and debt.original_current_balance is not None:
+                debt._originals_given = True
+                fields.append("original_current_balance")
+            debt.save(update_fields=fields)
     return debts
 
 
