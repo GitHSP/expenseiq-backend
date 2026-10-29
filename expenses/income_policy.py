@@ -63,3 +63,17 @@ def counts_as_income(kind, text, words=()):
     income, or is pay / a benefit / an ATM deposit whatever happened to it
     on import (already recorded by hand, or not saved)."""
     return kind == "income" or (kind in ("duplicate", "skipped") and deposit_class(text, words) == "income")
+
+
+# Interest and fees charged by a bank or card: not expenses (the user only
+# counts what they spent on things). They still show on the card and its debt.
+CHARGE_RE = re.compile(
+    r"\binterest|\bint charges?\b|\bnsf\b|\boverdraft\b|service charge|monthly fee|annual fee|"
+    r"late (?:payment )?fee|over ?limit fee|foreign transaction fee|cash advance fee|record-?keeping|"
+    r"\bfees?\b|\bfrais\b", re.I)
+
+
+def is_charge(text):
+    # (older imports have a card's "PAYMENTS & INTEREST" heading glued on)
+    text = re.sub(r"\bpayments\s*&\s*interest\b", "", str(text or ""), flags=re.I)
+    return bool(CHARGE_RE.search(text))

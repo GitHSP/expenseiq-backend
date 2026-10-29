@@ -114,6 +114,11 @@ NOTE_LINE_RE = re.compile(
 )
 
 # A table titled like this lists money coming in (e.g. CIBC "Your payments").
+# A line that's only a section heading ("PAYMENTS & INTEREST", "Purchases and
+# adjustments"): never part of the transaction above it.
+_SECTION_WORD = r"(?:new\s+)?(?:payments?|purchases?|interest|credits?|adjustments?|fees?|cash\s+advances?|charges?|transactions?|other)"
+SECTION_LINE_RE = re.compile(rf"\s*{_SECTION_WORD}(?:\s*(?:&|and|,|/)\s*{_SECTION_WORD})*\s*", re.IGNORECASE)
+
 CREDIT_SECTION_RE = re.compile(r"payments|credits|refunds", re.IGNORECASE)
 DEBIT_SECTION_RE = re.compile(r"charges|purchases|debits", re.IGNORECASE)
 
@@ -264,6 +269,10 @@ class Table:
                 nxt += 1                              # "Account Balance = $2,318.27"
             if nxt < len(phrases) and phrases[nxt]["money"]:
                 continue
+            if nxt < len(phrases) and re.fullmatch(r"[\d,]+", phrases[nxt]["text"]):
+                continue                              # "New points balance 800" (a rewards box)
+            if re.search(r"\bpoints?\b|\brewards?\b", p["text"], re.IGNORECASE):
+                continue
             heads.append(p)
         columns = []
         for p in heads:
@@ -298,9 +307,14 @@ class Table:
         [(kind, word)] for amounts under money columns."""
         cells, money, stray = {}, [], []
         self.stray_used = False
+        money_right = max((c["x1"] for c in self.money_cols), default=None)
+        text_after_money = money_right is not None and any(c["x0"] > money_right for c in self.text_cols)
         for w in line:
             if w["x0"] > self.right:
                 continue  # beside the table (e.g. a summary box)
+            if (money_right is not None and not text_after_money and w["x0"] > money_right + 12
+                    and not _is_money(w)):
+                continue  # words right of the last amount column (RBC's "PAYMENTS & INTEREST RATES" box)
             if w["x1"] < self.left:
                 continue  # printer marks in the margin (MBNA's "-IRH")
             if _is_money(w):
@@ -529,7 +543,8 @@ def _parse_tables(lines, end):
         if not has_amount:
             # A wrapped description line (or a note like a foreign-currency
             # rate) belongs to the transaction above it.
-            if rows and rows[-1]["_open"] and description and not d and not NOTE_LINE_RE.search(description):
+            if (rows and rows[-1]["_open"] and description and not d and not NOTE_LINE_RE.search(description)
+                    and not SECTION_LINE_RE.fullmatch(description)):
                 rows[-1]["description"] = f'{rows[-1]["description"]} {description}'.strip()[:200]
                 rows[-1]["_open"] -= 1
             continue
@@ -582,7 +597,10 @@ def _parse_without_header(lines, end):
             continue
         values = [_parse_money(w["text"]) for w in money]
         values = [v for v in values if v is not None]
-        description = " ".join(w["text"] for w in line if w not in money)
+        # The description is what's left of the first amount; words to the
+        # right of it are a side box on the same line (RBC's "PAYMENTS & INTEREST RATES").
+        first_x = min(w["x0"] for w in money)
+        description = " ".join(w["text"] for w in line if w not in money and w["x0"] < first_x)
         _, description = _leading_date(description, end)
         _, description = _leading_date(description, end)
 

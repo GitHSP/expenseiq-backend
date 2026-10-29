@@ -182,6 +182,10 @@ class MerchantRule(models.Model):
     rename_to  = models.CharField(max_length=120, blank=True, default='')
     category   = models.CharField(max_length=50, blank=True, default='')
     treat_as   = models.CharField(max_length=10, choices=TREAT, blank=True, default='')
+    # A shared bill's part that's the user's: a fixed amount (rent 625) or a
+    # percent (utilities 25). Its expense is saved at that share.
+    share_amount  = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    share_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

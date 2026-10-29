@@ -37,6 +37,48 @@ def shared_name(text, matchers):
     return max(hits, key=len).title() if hits else "Other"
 
 
+def parse_share(text):
+    """'625' -> (625, None); '25%' -> (None, 25); '' -> (None, None). ValueError if bad."""
+    text = str(text or "").strip().replace(",", "").replace("$", "")
+    if not text:
+        return None, None
+    if text.endswith("%"):
+        pct = Decimal(text[:-1].strip())
+        if not 0 < pct <= 100:
+            raise ValueError("A percent share must be between 0 and 100.")
+        return None, pct
+    amount = Decimal(text)
+    if amount <= 0:
+        raise ValueError("A share must be more than 0.")
+    return amount, None
+
+
+def share_label(rule):
+    if rule.share_amount is not None:
+        return f"{rule.share_amount.normalize():f}"
+    if rule.share_percent is not None:
+        return f"{rule.share_percent.normalize():f}%"
+    return ""
+
+
+def bill_share(rules, text, paid):
+    """The user's part of a shared bill they paid in full (None: no share set)."""
+    rule = rule_for([r for r in rules if r.treat_as == "bill"], text)
+    if rule is None:
+        return None
+    if rule.share_amount is not None:
+        return min(rule.share_amount, paid)
+    if rule.share_percent is not None:
+        return (paid * rule.share_percent / 100).quantize(Decimal("0.01"))
+    return None
+
+
+def shares_set(user):
+    """Shared bills are saved at the user's share, so roommates' money just pays them back."""
+    return MerchantRule.objects.filter(user=user, treat_as="bill").filter(
+        Q(share_amount__isnull=False) | Q(share_percent__isnull=False)).exists()
+
+
 def rule_for(rules, *texts):
     """The rule that applies to a transaction (longest match wins)."""
     hay = " ".join(str(t or "") for t in texts).lower()
@@ -51,7 +93,10 @@ def apply_to_preview(user, preview, file_kinds=None):
     from .income_policy import deposit_class, income_words
     rules = list(MerchantRule.objects.filter(user=user))
     words = income_words(user)
+    from .income_policy import is_charge
     for row in preview:
+        if Decimal(str(row.get("signed_amount") or 0)) < 0 and is_charge(f'{row["raw_description"]} {row["title"]}'):
+            row["not_expense"] = "charge"              # interest or a fee: not an expense
         kind = (file_kinds or {}).get(row.get("file"))
         if (kind and Decimal(str(row.get("signed_amount") or 0)) > 0
                 and not row.get("is_transfer") and not row.get("transfer_match")):
@@ -123,6 +168,17 @@ def apply_rule(user, rule):
                     changes["category"] = "Shared bills"
                 if tx.kind == "income":
                     changes["kind"] = "skipped"
+            if rule.treat_as == "bill" and tx.amount < 0 and tx.expense is not None:
+                # Saved at the user's share (rent 625 of 2,550), or the full bill without one.
+                full = -tx.amount
+                share = bill_share([rule], f"{tx.title} {tx.description}", full)
+                want = share if share is not None else full
+                if tx.expense.amount != want:
+                    tx.expense.amount = want
+                    tx.expense.notes = (f"Your share of {full:,.2f} (shared bill)" if share is not None
+                                        else tx.expense.notes.replace("(shared bill)", "").strip())
+                    tx.expense.save(update_fields=["amount", "notes"])
+                    counts["entries_updated"] += 1
             if rule.treat_as != "transfer":
                 for entry in (tx.expense, None if "income" in changes else tx.income):
                     if entry is None:

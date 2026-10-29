@@ -444,7 +444,7 @@ class CardDebtTests(TestCase):
                              {"date": "2026-10-06", "description": "TO CARD 1234", "amount": "-500.00", "kind": "transfer"}],
         }]}, format="json")
         data = self.client.get("/api/statements/summary/").data
-        self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00", "shared_by_others": "0.00", "shared_by": {}, "shared_bills": {}}])
+        self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00", "shared_by_others": "0.00", "shared_by": {}, "shared_bills": {}, "my_shares": {}, "bills_at_share": False}])
 
 
 class RuleApiTests(TestCase):

@@ -59,9 +59,13 @@ def _shared_rules(user):
 
 def _month_figures(user, ym):
     start, end = _month_bounds(ym)
-    from expenses.income_policy import counts_as_income, deposit_class, income_words
+    from expenses.income_policy import counts_as_income, deposit_class, income_words, is_charge
+    from expenses.models import MerchantRule
+    from expenses.rules import bill_share, shares_set
     shared = _shared_rules(user)
     words = income_words(user)
+    bill_rules = list(MerchantRule.objects.filter(user=user, treat_as="bill"))
+    at_share = shares_set(user)
     income = spent = contributions = D0
     cats, merchants, names = defaultdict(lambda: D0), defaultdict(lambda: D0), {}
     interest = fees = D0
@@ -81,18 +85,26 @@ def _month_figures(user, ym):
                 continue                            # money in that isn't income (a friend, own transfer)
             # a refund or reversal: lowers spending (falls through, negative)
         value = -r["amount"]                       # card refunds come in negative
+        text = f"{r['title']} {r['description']}"
+        if is_charge(text):
+            # Interest and fees aren't spending, but they're reported.
+            if "interest" in text.lower() and "reversal" not in text.lower():
+                interest += value
+            else:
+                fees += value
+            continue
+        if value > 0:
+            share = bill_share(bill_rules, text, value)
+            if share is not None:
+                value = share                      # the user's part of a shared bill
         spent += value
         cats[r["category"] or "Uncategorised"] += value
         key = merchant_group(r["title"])
         merchants[key] += value
         names.setdefault(key, r["title"])
-        text = f"{r['title']} {r['description']}".lower()
-        if "interest" in text and "reversal" not in text:
-            interest += value
-        elif FEE_RE.search(text):
-            fees += value
-    # What the user spent themselves: shared bills less what others paid back.
-    return {"income": income, "spent": spent - contributions, "spent_before_shares": spent,
+    # What the user spent themselves: shared bills at their share, or less
+    # what others paid back when no share is set.
+    return {"income": income, "spent": spent - (D0 if at_share else contributions), "spent_before_shares": spent,
             "categories": cats, "merchants": merchants, "names": names,
             "interest": interest, "fees": fees, "contributions": contributions}
 

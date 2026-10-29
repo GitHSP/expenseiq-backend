@@ -115,8 +115,12 @@ class MonthlySummaryView(APIView):
 
     def get(self, request):
         from .income_policy import counts_as_income, deposit_class, income_words
-        from .rules import is_shared, shared_matchers, shared_name
+        from .income_policy import is_charge
+        from .models import MerchantRule
+        from .rules import bill_share, is_shared, shared_matchers, shared_name, shares_set
         words = income_words(request.user)
+        bill_rules = list(MerchantRule.objects.filter(user=request.user, treat_as="bill"))
+        at_share = shares_set(request.user)
         shared = shared_matchers(request.user)
         bills = shared_matchers(request.user, "bill")
         months = {}
@@ -125,10 +129,16 @@ class MonthlySummaryView(APIView):
         for d, amount, acct_kind, kind, title, desc in rows:
             m = months.setdefault(f"{d.year}-{d.month:02d}",
                                   {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0"), "by": {},
-                                   "bills": {}})
-            if amount < 0 and kind != "transfer" and bills and is_shared(f"{title} {desc}", bills):
-                bill = shared_name(f"{title} {desc}", bills)          # rent, utilities... paid in full
+                                   "bills": {}, "mine": {}})
+            text = f"{title} {desc}"
+            if kind != "transfer" and is_charge(text) and not (amount > 0 and is_shared(text, shared)):
+                continue                         # interest and fees aren't expenses
+            share = None
+            if amount < 0 and kind != "transfer" and bills and is_shared(text, bills):
+                bill = shared_name(text, bills)          # rent, utilities... paid in full
                 m["bills"][bill] = m["bills"].get(bill, Decimal("0")) - amount
+                share = bill_share(bill_rules, text, -amount)
+                m["mine"][bill] = m["mine"].get(bill, Decimal("0")) + (share if share is not None else -amount)
             if amount > 0 and acct_kind != "credit_card" and shared and is_shared(f"{title} {desc}", shared):
                 m["shared"] += amount            # a roommate's share of the bills: lowers spending
                 who = shared_name(f"{title} {desc}", shared)
@@ -142,12 +152,17 @@ class MonthlySummaryView(APIView):
                     m["expenses"] -= amount      # a refund or reversal lowers spending
                 # anything else coming in (friends, own transfers) isn't income
             else:
-                m["expenses"] -= amount          # card refunds (positive) lower spending
-        out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"] - v["shared"]),
-                "net": _money(v["income"] - v["expenses"] + v["shared"]),
+                m["expenses"] += share if share is not None else -amount   # card refunds (positive) lower spending
+        # With shares set, bills already count only the user's part; what
+        # roommates send just pays them back. Without, it lowers spending.
+        offset = (lambda v: Decimal("0")) if at_share else (lambda v: v["shared"])
+        out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"] - offset(v)),
+                "net": _money(v["income"] - v["expenses"] + offset(v)),
                 "shared_by_others": _money(v["shared"]),
                 "shared_by": {who: _money(a) for who, a in sorted(v["by"].items())},
-                "shared_bills": {b: _money(a) for b, a in sorted(v["bills"].items())}} for k, v in sorted(months.items())]
+                "shared_bills": {b: _money(a) for b, a in sorted(v["bills"].items())},
+                "my_shares": {b: _money(a) for b, a in sorted(v["mine"].items())},
+                "bills_at_share": at_share} for k, v in sorted(months.items())]
         total_in = sum((Decimal(m["income"]) for m in out), Decimal("0"))
         total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
         return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),
@@ -390,14 +405,17 @@ class RuleListView(APIView):
 
     def get(self, request):
         from .models import MerchantRule
+        from .rules import share_label
         return Response({"rules": [{"id": r.id, "match": r.match, "rename_to": r.rename_to, "category": r.category,
-                                    "treat_as": r.treat_as} for r in MerchantRule.objects.filter(user=request.user)]})
+                                    "treat_as": r.treat_as, "my_share": share_label(r)}
+                                   for r in MerchantRule.objects.filter(user=request.user)]})
 
     def post(self, request):
         from assistant.personal import add_rule
         d = request.data
         result = add_rule(request.user, d.get("match"), rename_to=d.get("rename_to") or "",
-                          category=d.get("category") or "", treat_as=d.get("treat_as") or "")
+                          category=d.get("category") or "", treat_as=d.get("treat_as") or "",
+                          my_share=d.get("my_share") or "")
         return Response(result, status=status.HTTP_201_CREATED if result.get("ok") else status.HTTP_400_BAD_REQUEST)
 
 

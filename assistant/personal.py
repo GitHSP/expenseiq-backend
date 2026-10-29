@@ -16,8 +16,14 @@ MAX_MEMORIES = 40
 
 # ── Rules ──
 
-def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
+def add_rule(user, match, rename_to="", category="", treat_as="", my_share="", **kwargs):
+    from expenses.rules import parse_share
     match = str(match or "").strip()[:100]
+    try:
+        share_amount, share_percent = parse_share(my_share) if treat_as == "bill" else (None, None)
+    except (ValueError, ArithmeticError) as e:
+        return {"ok": False, "message": str(e) if isinstance(e, ValueError) and str(e) else
+                "My share must be an amount like 625 or a percent like 25%."}
     if len(match) < 3:
         return {"ok": False, "message": "Give at least 3 characters of the merchant/description to match."}
     if treat_as not in ("", "transfer", "spending", "shared", "bill"):
@@ -29,7 +35,8 @@ def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
         return {"ok": False, "message": "Say what the rule should do: rename, set a category, or mark as own-account transfers."}
     rule, created = MerchantRule.objects.update_or_create(
         user=user, match__iexact=match,
-        defaults={"match": match, "rename_to": str(rename_to or "")[:120], "category": category or "", "treat_as": treat_as or ""},
+        defaults={"match": match, "rename_to": str(rename_to or "")[:120], "category": category or "", "treat_as": treat_as or "",
+                  "share_amount": share_amount, "share_percent": share_percent},
     )
     counts = apply_rule(user, rule)
     parts = [p for p in (f"renamed to '{rule.rename_to}'" if rule.rename_to else "",
@@ -37,7 +44,9 @@ def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
                          "treated as money moving between your own accounts" if rule.treat_as == "transfer" else
                          "counted as real spending/income" if rule.treat_as == "spending" else
                          "their share of shared bills (not income; it lowers your spending)" if rule.treat_as == "shared" else
-                         "a shared bill you pay in full (roommates pay you back)" if rule.treat_as == "bill" else "") if p]
+                         ("a shared bill you pay in full (roommates pay you back)"
+                          + (f"; your share {my_share} is what counts as your expense" if my_share else ""))
+                         if rule.treat_as == "bill" else "") if p]
     return {"ok": True, "created": created,
             "message": f"Rule for anything mentioning '{rule.match}': {', '.join(parts)}. "
                        f"Applied to {counts['statement_rows']} statement rows; {counts['entries_updated']} entries updated"

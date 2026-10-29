@@ -108,3 +108,65 @@ class ChangeTransactionKindTests(TestCase):
                                                                       password="x-Test-12345"))
         self.assertEqual(other.patch(f"/api/statements/transactions/{self.tx.id}/", {"kind": "income"},
                                      format="json").status_code, 404)
+
+
+class BillShareAndChargesTests(TestCase):
+    """A shared bill is saved at the user's share; interest and fees aren't expenses."""
+
+    def setUp(self):
+        from .models import Expense
+        User = get_user_model()
+        self.user = User.objects.create_user(email="bs@example.test", username="bs", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        acc = Account.objects.create(user=self.user, name="Chequing", kind="chequing")
+        st = Statement.objects.create(user=self.user, account=acc, filename="s.pdf",
+                                      period_start=date(2026, 9, 1), period_end=date(2026, 9, 30))
+        def row(desc, amt, kind="expense", expense=True):
+            e = Expense.objects.create(user=self.user, title=desc.title(), amount=abs(Decimal(amt)), category="Other",
+                                       date=date(2026, 9, 2)) if expense else None
+            return StatementTransaction.objects.create(user=self.user, statement=st, account=acc, date=date(2026, 9, 2),
+                                                       description=desc, title=desc.title(), amount=Decimal(amt),
+                                                       kind=kind, expense=e)
+        self.rent = row("PREAUTHORIZED DEBIT NORTHGATE HOMES", "-2400.00")
+        self.power = row("HYDRO SPARK", "-100.00")
+        row("OVERDRAFT INTEREST CHARGE", "-5.00")
+        row("GROCERY", "-50.00")
+        row("E-TRANSFER ALEX", "600.00", kind="skipped", expense=False)
+
+    def month(self):
+        return self.client.get("/api/statements/summary/").data["months"][0]
+
+    def test_share_saves_my_part_and_roommates_just_pay_back(self):
+        from .models import Expense
+        for match, share in (("northgate", "600"), ("hydro spark", "25%")):
+            res = self.client.post("/api/statements/rules/", {"match": match, "treat_as": "bill", "my_share": share},
+                                   format="json")
+            self.assertEqual(res.status_code, 201, res.data)
+        self.client.post("/api/statements/rules/", {"match": "alex", "treat_as": "shared"}, format="json")
+        self.rent.refresh_from_db(); self.power.refresh_from_db()
+        self.assertEqual(Expense.objects.get(id=self.rent.expense_id).amount, Decimal("600.00"))
+        self.assertEqual(Expense.objects.get(id=self.power.expense_id).amount, Decimal("25.00"))
+        m = self.month()
+        # 600 rent + 25 power + 50 groceries; interest left out; Alex's 600 not taken off again.
+        self.assertEqual(m["expenses"], "675.00")
+        self.assertEqual(m["my_shares"], {"Hydro Spark": "25.00", "Northgate": "600.00"})
+        self.assertEqual(m["shared_bills"], {"Hydro Spark": "100.00", "Northgate": "2400.00"})
+        self.assertTrue(m["bills_at_share"])
+        rules = {r["match"]: r["my_share"] for r in self.client.get("/api/statements/rules/").data["rules"]}
+        self.assertEqual((rules["northgate"], rules["hydro spark"]), ("600", "25%"))
+
+    def test_bad_share_is_refused(self):
+        for bad in ("abc", "0", "150%"):
+            res = self.client.post("/api/statements/rules/", {"match": "northgate", "treat_as": "bill", "my_share": bad},
+                                   format="json")
+            self.assertEqual(res.status_code, 400, bad)
+
+    def test_interest_and_fees_arent_spending(self):
+        self.assertEqual(self.month()["expenses"], "2550.00")    # 2,400 + 100 + 50; the 5.00 interest left out
+        out = apply_to_preview(self.user, [
+            {"file": 0, "raw_description": "PURCHASE INTEREST 20.99%", "title": "Interest", "signed_amount": "-9.00"},
+            {"file": 0, "raw_description": "ANNUAL FEE", "title": "Annual Fee", "signed_amount": "-120.00"},
+            {"file": 0, "raw_description": "COFFEE SHOP", "title": "Coffee", "signed_amount": "-4.00"},
+        ], file_kinds={0: "credit_card"})
+        self.assertEqual([r.get("not_expense") for r in out], ["charge", "charge", None])
