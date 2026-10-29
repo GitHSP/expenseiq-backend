@@ -115,7 +115,12 @@ def get_financial_summary(user, **kwargs):
     month_expenses = Expense.objects.filter(user=user, date__year=today.year, date__month=today.month)
     month_income = Income.objects.filter(user=user, date__year=today.year, date__month=today.month)
     total_expenses = sum((e.amount for e in month_expenses), Decimal("0.00"))
-    total_income = sum((i.amount for i in month_income), Decimal("0.00"))
+    from expenses.rules import is_shared, shared_matchers
+    shared = shared_matchers(user)
+    # Roommates' shares of the bills aren't income (they lower spending).
+    shared_in = sum((i.amount for i in month_income if shared and is_shared(f"{i.title} {i.notes}", shared)), Decimal("0.00"))
+    total_income = sum((i.amount for i in month_income), Decimal("0.00")) - shared_in
+    total_expenses -= shared_in
 
     # Actual money in/out comes from the uploaded statements.
     actual = None
@@ -155,6 +160,18 @@ def get_financial_summary(user, **kwargs):
 
     plan = MonthlyPlan.objects.filter(user=user, year=today.year, month=today.month).first()
     if plan:
+        # The plan's own totals: biweekly pay counted per payday, a recurring
+        # payment linked to a debt counted once (as that debt's payment).
+        planned_totals = {"income": str(plan.total_income), "payments": str(plan.total_fixed_expenses),
+                          "debt_payments": str(plan.total_debt_payments),
+                          "savings": str(plan.emergency_fund_contribution),
+                          "extra_to_top_debt": str(plan.surplus_to_avalanche)}
+    else:
+        planned_totals = {
+            "income": str(sum((r.amount for r in planned if r.category == "income"), Decimal("0.00"))),
+            "payments": str(sum((r.amount for r in planned if r.category != "income"), Decimal("0.00"))),
+        }
+    if plan:
         items = plan.checklist_items.all()
         checklist_data = {
             "total_items": items.count(),
@@ -167,12 +184,12 @@ def get_financial_summary(user, **kwargs):
         "ok": True,
         "actual_from_statements": actual or "No statements uploaded yet.",
         "planned_monthly_from_planner": {
-            "income": str(sum((r.amount for r in planned if r.category == "income"), Decimal("0.00"))),
-            "payments": str(sum((r.amount for r in planned if r.category != "income"), Decimal("0.00"))),
+            **planned_totals,
             "note": "Rough amounts the user set in Planner — a plan, not what actually happened.",
         },
         "month": f"{today.year}-{today.month:02d}",
         "entered_in_app_this_month": {"expenses": str(total_expenses), "income": str(total_income),
+                                      "shared_by_roommates": str(shared_in),
                                       "note": "Only entries added in Glacier this month; the statements are the real record."},
         "active_debts": debts_data,
         "total_debt_balance": str(total_debt),
@@ -733,14 +750,15 @@ TOOL_SCHEMAS = [
             "and/or mark it as the user's own money moving between their accounts (treat_as 'transfer', e.g. "
             "'Wealthsimple is my own account' - matching expense/income entries are removed since they weren't "
             "spending), as real spending (treat_as 'spending'), or as a roommate/friend paying their share of "
-            "shared bills (treat_as 'shared', match their name as it appears in e-transfers). Applies to everything already imported and to "
+            "shared bills (treat_as 'shared', match their name as it appears in e-transfers), or as a shared bill "
+            "the user pays in full and roommates pay back (treat_as 'bill', e.g. rent, utilities). Applies to everything already imported and to "
             "future imports. Use one of the app's categories."
         ),
         "input_schema": {"type": "object", "properties": {
             "match": {"type": "string", "description": "Text to look for, e.g. 'tim hortons', 'wealthsimple', 'AMZN'."},
             "rename_to": {"type": "string", "description": "Clean name, e.g. 'Amazon'."},
             "category": {"type": "string", "enum": EXPENSE_CATEGORIES + [c for c in INCOME_CATEGORIES if c not in EXPENSE_CATEGORIES]},
-            "treat_as": {"type": "string", "enum": ["", "transfer", "spending", "shared"],
+            "treat_as": {"type": "string", "enum": ["", "transfer", "spending", "shared", "bill"],
                          "description": "'shared' = money from someone paying their share of bills the user pays in full (a roommate's e-transfer for rent/utilities/WiFi): not income - it's taken off the user's spending."},
         }, "required": ["match"]},
     },

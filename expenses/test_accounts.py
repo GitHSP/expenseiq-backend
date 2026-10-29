@@ -444,7 +444,7 @@ class CardDebtTests(TestCase):
                              {"date": "2026-10-06", "description": "TO CARD 1234", "amount": "-500.00", "kind": "transfer"}],
         }]}, format="json")
         data = self.client.get("/api/statements/summary/").data
-        self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00", "shared_by_others": "0.00"}])
+        self.assertEqual(data["months"], [{"month": "2026-10", "income": "2000.00", "expenses": "80.00", "net": "1920.00", "shared_by_others": "0.00", "shared_by": {}, "shared_bills": {}}])
 
 
 class RuleApiTests(TestCase):
@@ -466,3 +466,46 @@ class RuleApiTests(TestCase):
         self.assertEqual(other.get("/api/statements/rules/").data["rules"], [])
         self.assertEqual(other.delete(f"/api/statements/rules/{rules[0]['id']}/").status_code, 404)
         self.assertEqual(self.client.delete(f"/api/statements/rules/{rules[0]['id']}/").status_code, 204)
+
+
+class SharedBillsTests(TestCase):
+    """Roommates' e-transfers saved as income before (or despite) a shared rule
+    are fixed when rules are re-applied, and the summary says who paid what."""
+
+    def setUp(self):
+        from datetime import date
+        from expenses.models import Account, Income, Statement, StatementTransaction
+        User = get_user_model()
+        self.user = User.objects.create_user(email="sh@example.test", username="sh", password="x-Test-12345")
+        acc = Account.objects.create(user=self.user, name="Chequing", kind="chequing")
+        st = Statement.objects.create(user=self.user, account=acc, filename="s.pdf",
+                                      period_start=date(2026, 9, 1), period_end=date(2026, 9, 30))
+        for who, amt in (("ALEX SMITH", "600.00"), ("ALEX SMITH", "40.00"), ("JO LEE", "620.00")):
+            inc = Income.objects.create(user=self.user, title=f"E-Transfer {who}", amount=Decimal(amt),
+                                        date=date(2026, 9, 2), category="Other")
+            StatementTransaction.objects.create(user=self.user, statement=st, account=acc, date=date(2026, 9, 2),
+                                                description=f"E-TRANSFER {who}", title=f"E-Transfer {who}",
+                                                amount=Decimal(amt), kind="income", income=inc)
+        StatementTransaction.objects.create(user=self.user, statement=st, account=acc, date=date(2026, 9, 1),
+                                            description="RENT", title="Rent", amount=Decimal("-2000.00"),
+                                            kind="expense")
+
+    def test_rules_reapplied_and_breakdown(self):
+        from expenses.models import Income, MerchantRule
+        from expenses.rules import apply_all_rules
+        for name in ("alex", "jo lee"):
+            MerchantRule.objects.create(user=self.user, match=name, treat_as="shared")   # as if added before an import
+        MerchantRule.objects.create(user=self.user, match="rent", treat_as="bill")
+        self.assertEqual(Income.objects.filter(user=self.user).count(), 3)
+        totals = apply_all_rules(self.user)
+        self.assertEqual(totals["entries_removed"], 3)
+        self.assertFalse(Income.objects.filter(user=self.user).exists())
+        client = APIClient()
+        client.force_authenticate(self.user)
+        month = client.get("/api/statements/summary/").data["months"][0]
+        self.assertEqual(month["shared_by_others"], "1260.00")
+        self.assertEqual(month["shared_by"], {"Alex": "640.00", "Jo Lee": "620.00"})
+        self.assertEqual(month["shared_bills"], {"Rent": "2000.00"})
+        self.assertEqual(month["income"], "0.00")
+        self.assertEqual(month["expenses"], "740.00")                     # 2,000 rent − 1,260 shared
+        self.assertEqual(apply_all_rules(self.user)["entries_removed"], 0)   # safe to run again

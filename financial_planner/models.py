@@ -199,6 +199,9 @@ class RecurringItem(models.Model):
     # few matching deposits in the uploaded statements.
     average_from = models.CharField(max_length=100, blank=True, default="")
     average_of   = models.PositiveSmallIntegerField(default=0)    # how many deposits the average used
+    # The debt this pays (an education loan's EMI): the checklist item becomes
+    # that debt's payment — counted once, and ticking it lowers the balance.
+    debt = models.ForeignKey("Debt", on_delete=models.SET_NULL, null=True, blank=True, related_name="recurring_payments")
     is_auto_debit = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)

@@ -114,16 +114,23 @@ class MonthlySummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from .rules import is_shared, shared_matchers
+        from .rules import is_shared, shared_matchers, shared_name
         shared = shared_matchers(request.user)
+        bills = shared_matchers(request.user, "bill")
         months = {}
         rows = (StatementTransaction.objects.filter(user=request.user)
                 .values_list("date", "amount", "account__kind", "kind", "title", "description"))
         for d, amount, acct_kind, kind, title, desc in rows:
             m = months.setdefault(f"{d.year}-{d.month:02d}",
-                                  {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0")})
+                                  {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0"), "by": {},
+                                   "bills": {}})
+            if amount < 0 and kind != "transfer" and bills and is_shared(f"{title} {desc}", bills):
+                bill = shared_name(f"{title} {desc}", bills)          # rent, utilities... paid in full
+                m["bills"][bill] = m["bills"].get(bill, Decimal("0")) - amount
             if amount > 0 and acct_kind != "credit_card" and shared and is_shared(f"{title} {desc}", shared):
                 m["shared"] += amount            # a roommate's share of the bills: lowers spending
+                who = shared_name(f"{title} {desc}", shared)
+                m["by"][who] = m["by"].get(who, Decimal("0")) + amount
             elif kind == "transfer":
                 continue
             elif amount > 0 and acct_kind != "credit_card":
@@ -132,7 +139,9 @@ class MonthlySummaryView(APIView):
                 m["expenses"] -= amount          # card refunds (positive) lower spending
         out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"] - v["shared"]),
                 "net": _money(v["income"] - v["expenses"] + v["shared"]),
-                "shared_by_others": _money(v["shared"])} for k, v in sorted(months.items())]
+                "shared_by_others": _money(v["shared"]),
+                "shared_by": {who: _money(a) for who, a in sorted(v["by"].items())},
+                "shared_bills": {b: _money(a) for b, a in sorted(v["bills"].items())}} for k, v in sorted(months.items())]
         total_in = sum((Decimal(m["income"]) for m in out), Decimal("0"))
         total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
         return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),

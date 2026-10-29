@@ -223,6 +223,10 @@ class StatementImportView(APIView):
             # Last, so the statement's balance is what the card's debt ends up with.
             debts_updated = [r for r in (sync_debt(a) for a in Account.objects.filter(
                 user=request.user, id__in=getattr(self, "touched_accounts", ()), kind="credit_card")) if r]
+            # The user's rules win over how each row was imported (roommates'
+            # shares aren't income, own-account transfers aren't either).
+            from .rules import apply_all_rules
+            apply_all_rules(request.user)
             from financial_planner.services import refresh_average_pay, sync_current_month
             if refresh_average_pay(request.user):
                 sync_current_month(request.user)

@@ -161,10 +161,20 @@ def _desired_items(user, year=None, month=None):
             category="savings", is_auto_debit=False,
         )))
 
-    for rec in RecurringItem.objects.filter(user=user, is_active=True):
+    paid_by_recurring = set()      # debts whose payment is a recurring item
+    for rec in RecurringItem.objects.filter(user=user, is_active=True).select_related("debt"):
         common = dict(amount=rec.amount, original_amount=rec.original_amount,
                       original_currency=rec.original_currency, category=rec.category,
                       is_auto_debit=rec.is_auto_debit, recurring_item=rec)
+        if rec.debt_id and rec.category != "income":
+            debt = rec.debt
+            if not debt.is_active or debt.current_balance <= 0:
+                continue                                   # paid off: nothing more to pay
+            paid_by_recurring.add(debt.id)
+            amount = min(rec.amount, debt.current_balance)
+            common.update(category="debt_min", linked_debt=debt, amount=amount,
+                          original_amount=rec.original_amount if amount == rec.amount else None,
+                          original_currency=rec.original_currency if amount == rec.amount else "")
         if rec.frequency in ("weekly", "biweekly") and year and month:
             # One item per payday that month (2 or 3 for biweekly).
             for d in paydays(rec, year, month):
@@ -180,6 +190,8 @@ def _desired_items(user, year=None, month=None):
         .order_by("avalanche_order")
     )
     for debt in debts:
+        if debt.id in paid_by_recurring:
+            continue                                       # its recurring payment is on the list already
         suffix = "minimum payment" if debt.debt_type == "credit_card" else "payment"
         desired.append((("debt_min", debt.id), dict(
             label=f"{debt.name} {suffix}",
@@ -216,7 +228,7 @@ def _update_plan_totals(plan, desired):
     for (kind, *_), f in desired:
         if f["category"] == "income":
             totals["income"] += f["amount"]
-        elif kind == "debt_min":
+        elif kind == "debt_min" or f["category"] == "debt_min":
             totals["debt"] += f["amount"]
         elif kind == "debt_extra":
             extra = f["amount"]

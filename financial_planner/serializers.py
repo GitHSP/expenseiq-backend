@@ -102,7 +102,7 @@ class RecurringItemSerializer(serializers.ModelSerializer):
         model  = RecurringItem
         fields = [
             'id', 'label', 'amount', 'original_amount', 'original_currency', 'due_day', 'category',
-            'frequency', 'anchor_date', 'average_from', 'average_of',
+            'frequency', 'anchor_date', 'average_from', 'average_of', 'debt',
             'is_auto_debit', 'is_active', 'notes',
             'created_at', 'updated_at',
         ]
@@ -118,6 +118,12 @@ class RecurringItemSerializer(serializers.ModelSerializer):
     def validate_due_day(self, value):
         if value is not None and not 1 <= value <= 31:
             raise serializers.ValidationError("Due day must be between 1 and 31.")
+        return value
+
+    def validate_debt(self, value):
+        request = self.context.get("request")
+        if value is not None and request and value.user_id != request.user.id:
+            raise serializers.ValidationError("Debt not found.")
         return value
 
 

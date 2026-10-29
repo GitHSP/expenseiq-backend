@@ -20,8 +20,8 @@ def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
     match = str(match or "").strip()[:100]
     if len(match) < 3:
         return {"ok": False, "message": "Give at least 3 characters of the merchant/description to match."}
-    if treat_as not in ("", "transfer", "spending", "shared"):
-        return {"ok": False, "message": "treat_as must be 'transfer', 'spending', 'shared' or empty."}
+    if treat_as not in ("", "transfer", "spending", "shared", "bill"):
+        return {"ok": False, "message": "treat_as must be 'transfer', 'spending', 'shared', 'bill' or empty."}
     valid = {c[0] for c in Expense.CATEGORIES} | {c[0] for c in Income.CATEGORIES}
     if category and category not in valid:
         return {"ok": False, "message": f"'{category}' isn't a category. Use one of: {', '.join(sorted(valid))}."}
@@ -36,7 +36,8 @@ def add_rule(user, match, rename_to="", category="", treat_as="", **kwargs):
                          f"category {rule.category}" if rule.category else "",
                          "treated as money moving between your own accounts" if rule.treat_as == "transfer" else
                          "counted as real spending/income" if rule.treat_as == "spending" else
-                         "their share of shared bills (not income; it lowers your spending)" if rule.treat_as == "shared" else "") if p]
+                         "their share of shared bills (not income; it lowers your spending)" if rule.treat_as == "shared" else
+                         "a shared bill you pay in full (roommates pay you back)" if rule.treat_as == "bill" else "") if p]
     return {"ok": True, "created": created,
             "message": f"Rule for anything mentioning '{rule.match}': {', '.join(parts)}. "
                        f"Applied to {counts['statement_rows']} statement rows; {counts['entries_updated']} entries updated"

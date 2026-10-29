@@ -7,5 +7,6 @@ cd ~/expenseiq-backend
 git pull --no-rebase --no-edit
 venv/bin/pip install -q --no-cache-dir -r requirements.txt
 venv/bin/python manage.py migrate --noinput
+venv/bin/python manage.py apply_rules              # imports follow the user's rules
 touch /var/www/sarathpeethu_pythonanywhere_com_wsgi.py    # reloads the site
 echo "Deployed. Site reloaded."

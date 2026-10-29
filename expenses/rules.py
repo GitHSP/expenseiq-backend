@@ -14,14 +14,22 @@ from activity.context import activity_context
 from .models import Expense, Income, MerchantRule, StatementTransaction
 
 
-def shared_matchers(user):
-    """Names whose money is their share of bills the user pays (not income)."""
-    return [r.match.lower() for r in MerchantRule.objects.filter(user=user, treat_as="shared")]
+def shared_matchers(user, treat_as="shared"):
+    """Names whose money is their share of bills the user pays (not income);
+    with treat_as="bill", the bills themselves (rent, utilities)."""
+    return [r.match.lower() for r in MerchantRule.objects.filter(user=user, treat_as=treat_as)]
 
 
 def is_shared(text, matchers):
     text = str(text or "").lower()
     return any(m in text for m in matchers)
+
+
+def shared_name(text, matchers):
+    """Which shared rule a row belongs to, as a display name ("alex" -> "Alex")."""
+    text = str(text or "").lower()
+    hits = [m for m in matchers if m in text]
+    return max(hits, key=len).title() if hits else "Other"
 
 
 def rule_for(rules, *texts):
@@ -47,7 +55,7 @@ def apply_to_preview(user, preview):
             row["expense_category"] = rule.category
         if rule.treat_as == "transfer":
             row["is_transfer"] = True
-        elif rule.treat_as == "spending":
+        elif rule.treat_as in ("spending", "bill"):
             row["is_transfer"] = False
             row["transfer_match"] = None
         elif rule.treat_as == "shared" and Decimal(str(row.get("signed_amount") or 0)) > 0:
@@ -77,7 +85,7 @@ def apply_rule(user, rule):
                         entry.delete()
                         counts["entries_removed"] += 1
                 changes.update(kind="transfer", expense=None, income=None)
-            elif rule.treat_as in ("spending", "shared") and tx.kind == "transfer":
+            elif rule.treat_as in ("spending", "shared", "bill") and tx.kind == "transfer":
                 changes["kind"] = "skipped"
             if rule.treat_as == "shared" and tx.amount > 0:
                 # Their share of the bills isn't income: drop income entries saved from it.
@@ -124,3 +132,13 @@ def apply_rule(user, rule):
                         entry.save(update_fields=fields)
                         counts["entries_updated"] += 1
     return counts
+
+
+def apply_all_rules(user):
+    """Re-apply every rule (after an import or re-upload, so rows saved as
+    income/expenses that a rule says otherwise get fixed). Returns totals."""
+    totals = {"statement_rows": 0, "entries_updated": 0, "entries_removed": 0}
+    for rule in MerchantRule.objects.filter(user=user):
+        for k, v in apply_rule(user, rule).items():
+            totals[k] += v
+    return totals

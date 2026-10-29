@@ -345,3 +345,54 @@ class RecurringFrequencyTests(TestCase):
                                      recurring_item=RecurringItem.objects.get(pk=pay["id"]), is_completed=True)
         sync_month_checklist(plan)
         self.assertFalse(plan.checklist_items.filter(category="income").exists())
+
+
+class RecurringPaysDebtTests(TestCase):
+    """A recurring payment linked to a debt is that debt's payment: listed once,
+    counted once, and ticking it lowers the balance (in rupees for an INR loan)."""
+
+    def setUp(self):
+        self.user = make_user("loan@example.test")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.loan = Debt.objects.create(
+            user=self.user, name="Study loan", debt_type="loan", current_balance=Decimal("7000.00"),
+            annual_interest_rate=Decimal("0"), minimum_payment=Decimal("400.00"),
+            original_currency="INR", original_current_balance=Decimal("500000.00"),
+            original_minimum_payment=Decimal("28000.00"))
+
+    def test_listed_once_and_ticking_pays_the_loan(self):
+        from financial_planner.services import toggle_checklist_item
+        res = self.client.post("/api/fp/recurring/", {
+            "label": "Loan EMI", "amount": "420.00", "original_amount": "30000.00", "original_currency": "INR",
+            "category": "transfer", "due_day": 5, "debt": self.loan.id}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        plan, _ = get_or_create_month_plan(self.user, 2026, 10)
+        loan_items = plan.checklist_items.filter(linked_debt=self.loan)
+        self.assertEqual(loan_items.count(), 1)                       # not the EMI *and* a minimum
+        item = loan_items.get()
+        self.assertEqual((item.label, item.category, item.amount), ("Loan EMI", "debt_min", Decimal("420.00")))
+        plan.refresh_from_db()
+        self.assertEqual(plan.total_debt_payments, Decimal("420.00"))
+        self.assertEqual(plan.total_fixed_expenses, Decimal("0.00"))
+        toggle_checklist_item(item)
+        self.loan.refresh_from_db()
+        self.assertEqual(self.loan.original_current_balance, Decimal("470000.00"))   # exactly ₹30,000 less
+
+    def test_unlinked_loan_keeps_its_own_payment(self):
+        plan, _ = get_or_create_month_plan(self.user, 2026, 10)
+        self.assertEqual(plan.checklist_items.get(linked_debt=self.loan).label, "Study loan payment")
+
+    def test_paid_off_loan_stops_the_payment(self):
+        RecurringItem.objects.create(user=self.user, label="Loan EMI", amount=Decimal("420"), category="transfer",
+                                     debt=self.loan)
+        self.loan.current_balance = Decimal("0")
+        self.loan.save()
+        plan, _ = get_or_create_month_plan(self.user, 2026, 10)
+        self.assertFalse(plan.checklist_items.filter(label="Loan EMI").exists())
+
+    def test_someone_elses_debt_is_refused(self):
+        other = make_user("other-loan@example.test")
+        theirs = Debt.objects.create(user=other, name="x", current_balance=1, annual_interest_rate=0, minimum_payment=1)
+        res = self.client.post("/api/fp/recurring/", {"label": "x", "amount": "1", "debt": theirs.id}, format="json")
+        self.assertEqual(res.status_code, 400)
