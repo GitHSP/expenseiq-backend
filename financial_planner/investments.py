@@ -63,11 +63,13 @@ def _insurance(inv, today):
         return m % step == 0 and (total_periods is None or m // step < total_periods)
 
     def grow(value, from_month, to_month, g=g):
-        # value at the start of from_month (its premium included) -> to_month
+        # value at from_month (that month's premium and deduction done) -> to_month.
+        # Each month, as the insurer does it: the premium comes in, the month's
+        # cost comes out, and what's left earns that month's growth.
         for m in range(from_month + 1, to_month + 1):
-            value = max(value * g - monthly_cost, Decimal(0))
             if premium_month(m):
                 value += pay
+            value = max(value - monthly_cost, Decimal(0)) * g
         return value
 
     if inv.current_value is not None:
