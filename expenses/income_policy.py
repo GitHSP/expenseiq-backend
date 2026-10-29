@@ -28,7 +28,7 @@ REFUND_RE = re.compile(r"REVERSAL|REFUND|\bRETURN\b|REMBOURSEMENT|CREDIT VOUCHER
 def income_words(user):
     """The user's own pay sources: the words on a recurring income's
     "Use my average pay", the payer's name in a recurring income's label
-    ("Salary WVRST (140 hrs)" -> "wvrst") and any "real spending / income" rule."""
+    ("Salary ACME (40 hrs)" -> "acme") and any "real spending / income" rule."""
     from financial_planner.models import RecurringItem
     from .models import MerchantRule
     incomes = RecurringItem.objects.filter(user=user, category="income")
