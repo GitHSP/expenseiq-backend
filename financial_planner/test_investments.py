@@ -208,3 +208,41 @@ class InsuranceCostTests(TestCase):
         low, mid, high = (Decimal(v) for v in s["expected"][-1]["values"])
         self.assertTrue(low < mid < high)
         self.assertEqual(s["monthly_split"], {"premium": "100.00", "cost": "30.00", "invested": "70.00"})
+
+
+class FixedDepositTests(TestCase):
+    def setUp(self):
+        self.user = make_user("fd@example.test")
+
+    def test_cumulative_fd(self):
+        fd = Investment.objects.create(user=self.user, kind="fd", name="FD", currency="INR",
+                                       start_date=date(2026, 1, 1), payment=Decimal("100000"),
+                                       rate=Decimal("7"), months=12)
+        s = summarize(fd, today=date(2026, 7, 2))
+        self.assertEqual(s["maturity"], "107185.90")               # 1,00,000 × 1.0175⁴
+        self.assertEqual(s["maturity_date"], "2027-01-01")
+        self.assertGreater(Decimal(s["value_now"]), Decimal("103000"))
+        self.assertLess(Decimal(s["value_now"]), Decimal("104000"))
+        self.assertEqual(summarize(fd, today=date(2027, 2, 1))["worth"], "107185.90")
+
+    def test_payout_fd(self):
+        fd = Investment.objects.create(user=self.user, kind="fd", name="FD", currency="INR",
+                                       start_date=date(2026, 1, 1), payment=Decimal("100000"),
+                                       rate=Decimal("7"), months=12, interest_payout="quarterly")
+        s = summarize(fd, today=date(2026, 7, 15))
+        self.assertEqual(s["interest_per_payout"], "1750.00")
+        self.assertEqual(s["payouts_received"], 2)
+        self.assertEqual(s["interest_received"], "3500.00")
+        self.assertEqual(s["interest"], "7000.00")
+        self.assertEqual(s["worth"], "100000.00")                  # the interest went to your account
+
+    def test_api_needs_amount_and_tenure(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        res = client.post("/api/fp/investments/", {"kind": "fd", "name": "FD", "currency": "INR",
+                                                   "start_date": "2026-01-01", "months": 12}, format="json")
+        self.assertEqual(res.status_code, 400)
+        res = client.post("/api/fp/investments/", {"kind": "fd", "name": "FD", "currency": "INR", "rate": "7",
+                                                   "start_date": "2026-01-01", "months": 12, "payment": "50000"},
+                          format="json")
+        self.assertEqual(res.status_code, 201, res.data)

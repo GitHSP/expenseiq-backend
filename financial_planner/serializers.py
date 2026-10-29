@@ -162,7 +162,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'current_value', 'current_value_date', 'maturity_value', 'yearly_cost', 'surrender_charge',
             'months', 'chit_value', 'prized', 'prized_date', 'prize_amount',
             'deposit_where', 'deposit_amount', 'deposit_rate', 'deposit_start',
-            'compounding', 'is_active', 'notes', 'payments', 'summary',
+            'compounding', 'interest_payout', 'is_active', 'notes', 'payments', 'summary',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -185,10 +185,12 @@ class InvestmentSerializer(serializers.ModelSerializer):
         def get(f):
             return attrs.get(f, getattr(self.instance, f, None))
         kind = get("kind")
-        if kind in ("rd", "chit") and not get("months"):
+        if kind in ("rd", "chit", "fd") and not get("months"):
             raise serializers.ValidationError({"months": "How many months does it run?"})
         if kind == "chit" and not get("chit_value"):
             raise serializers.ValidationError({"chit_value": "Enter the chit's total value."})
+        if kind == "fd" and not get("payment"):
+            raise serializers.ValidationError({"payment": "Enter the amount deposited."})
         if kind == "rd" and not get("payment"):
             raise serializers.ValidationError({"payment": "Enter the monthly instalment."})
         if kind == "insurance" and not get("payment"):

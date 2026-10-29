@@ -280,7 +280,10 @@ class Investment(models.Model):
     financial_planner/investments.py.
     """
 
-    KIND_CHOICES = [("insurance", "Insurance"), ("chit", "Chit"), ("rd", "Recurring deposit")]
+    KIND_CHOICES = [("insurance", "Insurance"), ("chit", "Chit"), ("rd", "Recurring deposit"),
+                    ("fd", "Fixed deposit")]
+    PAYOUT_CHOICES = [("", "Reinvested (paid at maturity)"), ("monthly", "Paid out monthly"),
+                      ("quarterly", "Paid out quarterly"), ("yearly", "Paid out yearly")]
     FREQUENCY_CHOICES = [("monthly", "Monthly"), ("quarterly", "Quarterly"),
                          ("half_yearly", "Half-yearly"), ("yearly", "Yearly")]
     COMPOUNDING_CHOICES = [("quarterly", "Quarterly"), ("monthly", "Monthly"), ("yearly", "Yearly")]
@@ -325,8 +328,9 @@ class Investment(models.Model):
     deposit_rate   = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     deposit_start  = models.DateField(null=True, blank=True)
 
-    # RD
+    # RD and FD (an FD's amount deposited is `payment`, its tenure `months`)
     compounding = models.CharField(max_length=10, choices=COMPOUNDING_CHOICES, default="quarterly")
+    interest_payout = models.CharField(max_length=10, choices=PAYOUT_CHOICES, blank=True, default="")
 
     is_active  = models.BooleanField(default=True)
     notes      = models.TextField(blank=True)

@@ -8,6 +8,8 @@ it comes to at the end. All amounts are in the investment's own currency.
               Its worth is the cash value less any surrender charge.
   rd        - each instalment compounds (quarterly for Indian banks) until
               maturity: sum of P * (1 + r/q) ** (q * months_held / 12).
+  fd        - one deposit compounding until maturity, or (interest paid out)
+              the deposit stays the same and the interest comes in each period.
   chit      - instalments differ every month, so they're logged; what's left
               is estimated from the recent ones. A prized chit's money may sit
               in a deposit earning simple interest.
@@ -40,7 +42,7 @@ def add_months(d, n):
 
 def summarize(inv, today=None):
     today = today or date.today()
-    fn = {"insurance": _insurance, "rd": _rd, "chit": _chit}[inv.kind]
+    fn = {"insurance": _insurance, "rd": _rd, "chit": _chit, "fd": _fd}[inv.kind]
     out = fn(inv, today)
     return {k: (str(_money(v)) if isinstance(v, Decimal) else v) for k, v in out.items()}
 
@@ -157,6 +159,52 @@ def _rd(inv, today):
         "value_now": value_now,
         "matured": today >= maturity_date,
         "worth": value_now,
+    }
+
+
+# ── fixed deposit ──
+
+def _fd(inv, today):
+    n = inv.months or 0
+    principal = Decimal(inv.payment)
+    r = Decimal(inv.rate) / 100
+    maturity_date = add_months(inv.start_date, n)
+    years_held = Decimal(max((min(today, maturity_date) - inv.start_date).days, 0)) / 365
+    payout = PER_YEAR.get(inv.interest_payout)
+    if payout:
+        # Interest is paid to the account each period; the deposit itself stays.
+        per_period = principal * r / payout
+        periods = n * payout // 12
+        received = min(months_between(inv.start_date, min(today, maturity_date)) * payout // 12, periods)
+        calculated = principal
+        interest = per_period * periods
+        value_now = principal
+        extra = {"interest_per_payout": per_period, "interest_received": per_period * received,
+                 "payouts_received": received, "payouts_total": periods}
+    else:
+        q = COMPOUND.get(inv.compounding, 4)
+        calculated = principal * (1 + r / q) ** (Decimal(q * n) / 12)
+        value_now = principal * (1 + r / q) ** (q * years_held)
+        interest = calculated - principal
+        extra = {}
+    maturity = Decimal(inv.maturity_value) if inv.maturity_value is not None else calculated
+    if not payout and inv.maturity_value is not None:
+        interest = maturity - principal
+    matured = today >= maturity_date
+    if matured:
+        value_now = maturity
+    return {
+        "deposited": principal,
+        "maturity_date": maturity_date.isoformat(),
+        "months_left": months_between(today, maturity_date),
+        "calculated_maturity": calculated,
+        "maturity": maturity,
+        "interest": interest,
+        "interest_so_far": value_now - principal if not payout else extra["interest_received"],
+        "value_now": value_now,
+        "matured": matured,
+        "worth": value_now,
+        **extra,
     }
 
 
