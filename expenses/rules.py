@@ -4,6 +4,7 @@
 # "Wealthsimple is my own account"): applied to what's already imported and
 # to statement previews, so future imports follow them too.
 
+import re
 from decimal import Decimal
 
 from django.db import transaction
@@ -12,6 +13,10 @@ from django.db.models import Q
 from activity.context import activity_context
 
 from .models import Expense, Income, MerchantRule, StatementTransaction
+
+
+# A payment onto a credit card (money from the user's bank account).
+CARD_PAYMENT_RE = re.compile(r"\bPAYMENT\b|\bPAIEMENT\b", re.I)
 
 
 def shared_matchers(user, treat_as="shared"):
@@ -39,9 +44,28 @@ def rule_for(rules, *texts):
     return max(hits, key=lambda r: len(r.match)) if hits else None
 
 
-def apply_to_preview(user, preview):
-    """Statement preview rows follow the user's rules."""
+def apply_to_preview(user, preview, file_kinds=None):
+    """Statement preview rows follow the user's rules. On bank accounts, money
+    coming in is only ticked as income when it's pay, a government benefit or
+    an ATM deposit (file_kinds: file index -> account kind)."""
+    from .income_policy import deposit_class, income_words
     rules = list(MerchantRule.objects.filter(user=user))
+    words = income_words(user)
+    for row in preview:
+        kind = (file_kinds or {}).get(row.get("file"))
+        if (kind and Decimal(str(row.get("signed_amount") or 0)) > 0
+                and not row.get("is_transfer") and not row.get("transfer_match")):
+            text = f'{row["raw_description"]} {row["title"]}'
+            if kind == "credit_card":
+                # Money onto a card is a payment (own money moving) or a refund — never income.
+                if CARD_PAYMENT_RE.search(text):
+                    row["is_transfer"] = True
+                else:
+                    row["not_income"] = "refund"
+                continue
+            cls = deposit_class(text, words)
+            if cls != "income":
+                row["not_income"] = cls or "other"     # "refund" or "other"
     if not rules:
         return preview
     for row in preview:
@@ -58,10 +82,12 @@ def apply_to_preview(user, preview):
         elif rule.treat_as in ("spending", "bill"):
             row["is_transfer"] = False
             row["transfer_match"] = None
+            row.pop("not_income", None)            # the user said it's real income/spending
         elif rule.treat_as == "shared" and Decimal(str(row.get("signed_amount") or 0)) > 0:
             # Someone's share of the bills: not income, so not imported as income.
             row["is_transfer"] = True
             row["shared"] = True
+            row.pop("not_income", None)
     return preview
 
 

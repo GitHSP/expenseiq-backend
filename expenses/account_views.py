@@ -114,7 +114,9 @@ class MonthlySummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from .income_policy import counts_as_income, deposit_class, income_words
         from .rules import is_shared, shared_matchers, shared_name
+        words = income_words(request.user)
         shared = shared_matchers(request.user)
         bills = shared_matchers(request.user, "bill")
         months = {}
@@ -134,7 +136,11 @@ class MonthlySummaryView(APIView):
             elif kind == "transfer":
                 continue
             elif amount > 0 and acct_kind != "credit_card":
-                m["income"] += amount
+                if counts_as_income(kind, f"{title} {desc}", words):
+                    m["income"] += amount
+                elif deposit_class(f"{title} {desc}", words) == "refund":
+                    m["expenses"] -= amount      # a refund or reversal lowers spending
+                # anything else coming in (friends, own transfers) isn't income
             else:
                 m["expenses"] -= amount          # card refunds (positive) lower spending
         out = [{"month": k, "income": _money(v["income"]), "expenses": _money(v["expenses"] - v["shared"]),

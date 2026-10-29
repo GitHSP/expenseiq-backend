@@ -59,7 +59,9 @@ def _shared_rules(user):
 
 def _month_figures(user, ym):
     start, end = _month_bounds(ym)
+    from expenses.income_policy import counts_as_income, deposit_class, income_words
     shared = _shared_rules(user)
+    words = income_words(user)
     income = spent = contributions = D0
     cats, merchants, names = defaultdict(lambda: D0), defaultdict(lambda: D0), {}
     interest = fees = D0
@@ -71,8 +73,13 @@ def _month_figures(user, ym):
         if r["transfer"]:
             continue
         if r["amount"] > 0 and r["account_kind"] != "credit_card":
-            income += r["amount"]
-            continue
+            text = f"{r['title']} {r['description']}"
+            if counts_as_income(r.get("kind"), text, words):
+                income += r["amount"]
+                continue
+            if deposit_class(text, words) != "refund":
+                continue                            # money in that isn't income (a friend, own transfer)
+            # a refund or reversal: lowers spending (falls through, negative)
         value = -r["amount"]                       # card refunds come in negative
         spent += value
         cats[r["category"] or "Uncategorised"] += value

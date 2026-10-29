@@ -216,5 +216,6 @@ class PlanVsActualTests(Base):
     def test_summary_reports_statement_figures(self):
         from .tools import get_financial_summary
         s = get_financial_summary(self.user)
-        self.assertEqual(s["actual_from_statements"]["2026-09"]["income"], "4950.00")
+        # Only the pay: friends' e-transfers aren't income unless the user adds them.
+        self.assertEqual(s["actual_from_statements"]["2026-09"]["income"], "3050.00")
         self.assertEqual(s["planned_monthly_from_planner"]["income"], "3000.00")

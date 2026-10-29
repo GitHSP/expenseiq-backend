@@ -113,6 +113,7 @@ def _rows(user, date_from, date_to):
             "date": t.date, "title": (t.expense.title if t.expense else t.income.title if t.income else t.title),
             "description": t.description, "amount": t.amount, "account": t.account.name,
             "account_kind": t.account.kind, "category": category, "transfer": t.kind == "transfer",
+            "kind": t.kind,
         })
     for model, sign, linked in ((Expense, -1, linked_e), (Income, 1, linked_i)):
         qs = model.objects.filter(user=user).exclude(id__in=linked)
@@ -124,7 +125,7 @@ def _rows(user, date_from, date_to):
             out.append({
                 "date": e.date, "title": e.title, "description": e.notes or "", "amount": sign * e.amount,
                 "account": "Entered in Glacier (no statement)", "account_kind": "", "category": e.category,
-                "transfer": False,
+                "transfer": False, "kind": "income" if sign > 0 else "expense",
             })
     return out
 

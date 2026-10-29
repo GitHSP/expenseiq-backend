@@ -152,7 +152,10 @@ class StatementPreviewView(APIView):
         return Response({
             "files": file_info,
             "accounts": [{"id": a.id, "name": a.name, "kind": a.kind} for a in accounts],
-            "rows": apply_to_preview(request.user, match_checklist(request.user, build_preview(request.user, files), files)),
+            "rows": apply_to_preview(request.user, match_checklist(request.user, build_preview(request.user, files), files),
+                                     file_kinds={i: (next((a.kind for a in accounts if a.id == fi["account_id"]), None)
+                                                     or fi["account_guess"].get("kind"))
+                                                 for i, fi in enumerate(file_info)}),
             "skipped": skipped,
         })
 
