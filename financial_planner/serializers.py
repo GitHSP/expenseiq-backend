@@ -1,3 +1,4 @@
+from decimal import Decimal
 from rest_framework import serializers
 from django.utils   import timezone
 from expenses.serializers import CURRENCIES, clean_original
@@ -201,6 +202,18 @@ class InvestmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"payment": "Enter the monthly instalment."})
         if kind == "insurance" and not get("payment"):
             raise serializers.ValidationError({"payment": "Enter the premium."})
+        paying, term = get("paying_years"), get("term_years")
+        if paying and paying > 100:
+            raise serializers.ValidationError({"paying_years": "That's more than 100 years — leave it empty if premiums have no set end."})
+        if term and term > 100:
+            raise serializers.ValidationError({"term_years": "That's more than 100 years."})
+        if paying and term and paying > term:
+            raise serializers.ValidationError({"paying_years": "Premiums can't run longer than the policy term."})
+        if kind == "insurance" and get("yearly_cost") and get("payment"):
+            per_year = Decimal(get("payment")) * {"monthly": 12, "quarterly": 4, "half_yearly": 2, "yearly": 1}.get(
+                get("payment_frequency") or "monthly", 12)
+            if Decimal(get("yearly_cost")) > per_year * 2:
+                raise serializers.ValidationError({"yearly_cost": "That's more than twice your yearly premiums — check the statement."})
         if attrs.get("current_value") is not None and not get("current_value_date"):
             attrs["current_value_date"] = timezone.localdate()
         return attrs

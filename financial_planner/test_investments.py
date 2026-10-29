@@ -246,3 +246,15 @@ class FixedDepositTests(TestCase):
                                                    "start_date": "2026-01-01", "months": 12, "payment": "50000"},
                           format="json")
         self.assertEqual(res.status_code, 201, res.data)
+
+
+class InsuranceValidationTests(TestCase):
+    def test_unlikely_years_and_costs_are_refused(self):
+        client = APIClient()
+        client.force_authenticate(make_user("val@example.test"))
+        base = {"kind": "insurance", "name": "UL", "currency": "CAD", "start_date": "2026-10-28", "payment": "100"}
+        post = lambda **kw: client.post("/api/fp/investments/", {**base, **kw}, format="json").status_code
+        self.assertEqual(post(paying_years=1272), 400)
+        self.assertEqual(post(paying_years=30, term_years=20), 400)
+        self.assertEqual(post(yearly_cost="5000"), 400)
+        self.assertEqual(post(yearly_cost="700", term_years=40), 201)
