@@ -67,3 +67,44 @@ class IncomePolicyFlowTests(TestCase):
         client.force_authenticate(self.user)
         month = client.get("/api/statements/summary/").data["months"][0]
         self.assertEqual((month["income"], month["expenses"]), ("1000.00", "91.00"))
+
+
+class ChangeTransactionKindTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email="tk@example.test", username="tk", password="x-Test-12345")
+        acc = Account.objects.create(user=self.user, name="Chequing", kind="chequing")
+        st = Statement.objects.create(user=self.user, account=acc, filename="sep.pdf",
+                                      period_start=date(2026, 9, 1), period_end=date(2026, 9, 30))
+        self.tx = StatementTransaction.objects.create(user=self.user, statement=st, account=acc, date=date(2026, 9, 3),
+                                                      description="E-TRANSFER GIG CO", title="E-Transfer Gig Co",
+                                                      amount=Decimal("300.00"), kind="skipped")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def patch(self, **data):
+        return self.client.patch(f"/api/statements/transactions/{self.tx.id}/", data, format="json")
+
+    def test_income_then_back_to_not_saved(self):
+        from .models import Income
+        res = self.patch(kind="income")
+        self.assertEqual(res.status_code, 200, res.data)
+        inc = Income.objects.get(user=self.user)
+        self.assertEqual((inc.title, inc.amount, inc.notes), ("E-Transfer Gig Co", Decimal("300.00"), "Imported from sep.pdf"))
+        self.assertEqual(self.patch(kind="income").status_code, 200)           # no second entry
+        self.assertEqual(Income.objects.filter(user=self.user).count(), 1)
+        self.patch(kind="skipped")
+        self.assertFalse(Income.objects.filter(user=self.user).exists())
+        self.tx.refresh_from_db()
+        self.assertEqual((self.tx.kind, self.tx.income_id), ("skipped", None))
+
+    def test_expense_and_privacy(self):
+        from .models import Expense
+        self.assertEqual(self.patch(kind="expense").status_code, 200)
+        self.assertEqual(Expense.objects.get(user=self.user).amount, Decimal("300.00"))
+        self.assertEqual(self.patch(kind="duplicate").status_code, 400)
+        other = APIClient()
+        other.force_authenticate(get_user_model().objects.create_user(email="tk2@example.test", username="tk2",
+                                                                      password="x-Test-12345"))
+        self.assertEqual(other.patch(f"/api/statements/transactions/{self.tx.id}/", {"kind": "income"},
+                                     format="json").status_code, 404)

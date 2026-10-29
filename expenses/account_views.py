@@ -303,6 +303,61 @@ class AccountTransactionsView(APIView):
         })
 
 
+class TransactionDetailView(APIView):
+    """PATCH /api/statements/transactions/<id>/ {kind: expense|income|transfer|skipped, category?}
+    Change what a statement row is. An expense or income entry is created
+    for it (or removed), so the dashboard, planner and Aurora follow."""
+    permission_classes = [IsAuthenticated]
+    KINDS = ("expense", "income", "transfer", "skipped")
+
+    def patch(self, request, pk):
+        tx = (StatementTransaction.objects.filter(user=request.user, pk=pk)
+              .select_related("expense", "income", "statement").first())
+        if tx is None:
+            return Response({"error": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+        kind = request.data.get("kind")
+        if kind not in self.KINDS:
+            return Response({"error": "kind must be expense, income, transfer or skipped."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        category = request.data.get("category") or ""
+        with transaction.atomic(), activity_context(source="app", reason=f"Changed on statement {tx.statement.filename}"):
+            if kind != "expense" and tx.expense_id:
+                tx.expense.delete()
+                tx.expense = None
+            if kind != "income" and tx.income_id:
+                tx.income.delete()
+                tx.income = None
+            notes = f"Imported from {tx.statement.filename}"
+            if kind == "expense":
+                valid = {c[0] for c in Expense.CATEGORIES}
+                cat = category if category in valid else tx.category if tx.category in valid else \
+                    _match(EXPENSE_RULES, tx.description, "Other")
+                if tx.expense_id:
+                    if tx.expense.category != cat:
+                        tx.expense.category = cat
+                        tx.expense.save(update_fields=["category"])
+                else:
+                    tx.expense = Expense.objects.create(user=request.user, title=tx.title, amount=abs(tx.amount),
+                                                        category=cat, date=tx.date, notes=notes)
+                tx.category = cat
+            elif kind == "income":
+                valid = {c[0] for c in Income.CATEGORIES}
+                cat = category if category in valid else tx.category if tx.category in valid else "Other"
+                if tx.income_id:
+                    if tx.income.category != cat:
+                        tx.income.category = cat
+                        tx.income.save(update_fields=["category"])
+                else:
+                    tx.income = Income.objects.create(user=request.user, title=tx.title, amount=abs(tx.amount),
+                                                      category=cat, date=tx.date, notes=notes)
+                tx.category = cat
+            tx.kind = kind
+            tx.save(update_fields=["kind", "category", "expense", "income"])
+        if tx.account.debt_id:
+            sync_debt(tx.account)
+        return Response({"id": tx.id, "kind": tx.kind, "category": tx.category})
+
+
 class RecurringChargesView(APIView):
     """GET /api/statements/recurring/ — pre-authorized debits, subscriptions and
     other charges that repeat, across all accounts."""
