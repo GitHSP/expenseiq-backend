@@ -12,7 +12,7 @@ from .statement_import import StatementError, clean_title, parse_statement, sugg
 # Sample exports in each bank's layout (made-up transactions).
 RBC_CSV = """"Account Type","Account Number","Transaction Date","Cheque Number","Description 1","Description 2","CAD$","USD$"
 Chequing,01234-5678901,10/3/2026,,"TIM HORTONS #1234","TORONTO ON",-4.50,
-Chequing,01234-5678901,10/15/2026,,"PAYROLL DEPOSIT","WVRST",1150.00,
+Chequing,01234-5678901,10/15/2026,,"PAYROLL DEPOSIT","ACME",1150.00,
 Chequing,01234-5678901,10/16/2026,,"ONLINE TRANSFER","TO SAVINGS",-200.00,
 """
 
@@ -47,7 +47,7 @@ OFX = """OFXHEADER:100
 DATA:OFXSGML
 <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><BANKTRANLIST>
 <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261003120000[-5:EST]<TRNAMT>-4.50<FITID>1<NAME>TIM HORTONS #1234</STMTTRN>
-<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20261015<TRNAMT>1150.00<FITID>2<NAME>PAYROLL<MEMO>WVRST</STMTTRN>
+<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20261015<TRNAMT>1150.00<FITID>2<NAME>PAYROLL<MEMO>ACME</STMTTRN>
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>
 """
 
@@ -108,7 +108,7 @@ class ParseStatementTests(TestCase):
             (date(2026, 10, 3), Decimal("-4.50")),
             (date(2026, 10, 15), Decimal("1150.00")),
         ])
-        self.assertEqual(rows[1]["description"], "PAYROLL WVRST")
+        self.assertEqual(rows[1]["description"], "PAYROLL ACME")
 
     def test_cp1252_encoding(self):
         text = "Date,Description,Amount\n2026-10-03,CAFÉ DÉPANNEUR,-3.00\n"
@@ -353,7 +353,7 @@ BANK_PDF = make_pdf([[
     (50, 700, "Date"), (110, 700, "Description"), (330, 700, "Withdrawals ($)"), (420, 700, "Deposits ($)"), (510, 700, "Balance ($)"),
     (50, 685, "01 Oct"), (110, 685, "Opening Balance"), (515, 685, "1,000.00"),
     (50, 670, "03 Oct"), (110, 670, "Tim Hortons"), (340, 670, "4.50"), (515, 670, "995.50"),
-    (50, 655, "15 Oct"), (110, 655, "Payroll Deposit WVRST"), (425, 655, "1,150.00"), (515, 655, "2,145.50"),
+    (50, 655, "15 Oct"), (110, 655, "Payroll Deposit ACME"), (425, 655, "1,150.00"), (515, 655, "2,145.50"),
     (50, 640, "16 Oct"), (110, 640, "Online Transfer to Savings"), (340, 640, "200.00"), (515, 640, "1,945.50"),
     (50, 625, "31 Oct"), (110, 625, "Closing Balance"), (515, 625, "1,945.50"),
 ]])
@@ -519,18 +519,18 @@ SAME_DAY_PDF = make_pdf([[
     (40, 720, "Date"), (120, 720, "Description"), (330, 720, "Withdrawals ($)"), (440, 720, "Deposits ($)"), (520, 720, "Balance ($)"),
     (40, 705, "Sep 1"), (120, 705, "Opening balance"), (520, 705, "$2,552.58"),
     (40, 690, "Sep 1"), (120, 690, "VISA DEBIT RETAIL  PURCHASE"), (360, 690, "30.00"), (525, 690, "2,522.58"),
-    (120, 678, "PRESTO MOBI/SKC   624411249965"),
+    (120, 678, "PRESTO MOBI/SKC   624400000001"),
     (120, 663, "PREAUTHORIZED DEBIT"), (350, 663, "2,550.00"), (530, 663, "-27.42"),
     (120, 651, "Realstar Corp"),
-    (40, 636, "Sep 3"), (120, 636, "E-TRANSFER        011693914016"), (455, 636, "350.00"), (525, 636, "322.58"),
+    (40, 636, "Sep 3"), (120, 636, "E-TRANSFER        011600000003"), (455, 636, "350.00"), (525, 636, "322.58"),
     (120, 624, "Alex Sample"),
-    (120, 609, "E-TRANSFER        106101762546"), (360, 609, "350.00"), (530, 609, "-27.42"),
+    (120, 609, "E-TRANSFER        106100000005"), (360, 609, "350.00"), (530, 609, "-27.42"),
     (120, 597, "Sam Example"),
     (120, 582, "VISA DEBIT RETAIL  PURCHASE"), (365, 582, "1.92"), (530, 582, "-29.34"),
-    (120, 570, "TIM HORTONS #24   624637090333"),
-    (40, 555, "Sep 4"), (120, 555, "E-TRANSFER        011695311404"), (445, 555, "1,372.97"), (520, 555, "1,343.63"),
+    (120, 570, "TIM HORTONS #24   624600000002"),
+    (40, 555, "Sep 4"), (120, 555, "E-TRANSFER        011600000004"), (445, 555, "1,384.20"), (520, 555, "1,354.86"),
     (120, 543, "Payroll Co"),
-    (40, 520, "Sep 30"), (120, 520, "Closing balance"), (520, 520, "$1,343.63"),
+    (40, 520, "Sep 30"), (120, 520, "Closing balance"), (520, 520, "$1,354.86"),
 ]])
 
 
@@ -543,7 +543,7 @@ class SameDayPdfTests(TestCase):
             (date(2026, 9, 3), Decimal("350.00")),
             (date(2026, 9, 3), Decimal("-350.00")),
             (date(2026, 9, 3), Decimal("-1.92")),
-            (date(2026, 9, 4), Decimal("1372.97")),
+            (date(2026, 9, 4), Decimal("1384.20")),
         ])
 
     def test_titles_lead_with_the_merchant(self):
