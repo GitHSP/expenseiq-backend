@@ -19,7 +19,7 @@ from .services import (
     toggle_checklist_item, recalculate_avalanche_order,
     generate_checklist, rollover_month,
     get_or_create_current_plan, sync_current_month, delete_recurring_item,
-    delete_debt, refresh_average_pay,
+    delete_debt, refresh_average_pay, preview_next_month,
 )
 
 
@@ -149,6 +149,14 @@ class CurrentMonthPlanView(APIView):
         data = MonthlyPlanSerializer(plan).data
         data["rolled_over"] = rolled_over
         return Response(data)
+
+
+class NextMonthPlanView(APIView):
+    """GET /api/fp/plans/next/ - a look ahead at next month's payments; changes nothing."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(preview_next_month(request.user))
 
 
 # ─────────────────────────────────────────────

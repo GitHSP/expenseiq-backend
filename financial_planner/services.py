@@ -221,6 +221,34 @@ def _desired_items(user, year=None, month=None):
     return desired, top_debt
 
 
+def preview_next_month(user, today=None):
+    """What next month's checklist will hold, from today's recurring items and
+    debts. Read-only: no plan is created and no interest is applied."""
+    today = today or timezone.localdate()
+    year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    desired, top_debt = _desired_items(user, year, month)
+    income, payments, extra = [], [], Decimal("0.00")
+    for (kind, *_), f in desired:
+        if kind == "debt_extra":
+            extra = f["amount"]
+            continue
+        row = {"label": f["label"], "amount": f["amount"], "due_day": f["due_day"],
+               "category": f["category"], "is_auto_debit": f["is_auto_debit"],
+               "original_amount": f.get("original_amount"), "original_currency": f.get("original_currency") or ""}
+        (income if f["category"] == "income" else payments).append(row)
+    payments.sort(key=lambda r: (r["due_day"] or 99, r["label"]))
+    income.sort(key=lambda r: (r["due_day"] or 99, r["label"]))
+    income_total = sum((r["amount"] for r in income), Decimal("0.00"))
+    payments_total = sum((r["amount"] for r in payments), Decimal("0.00"))
+    return {
+        "year": year, "month": month,
+        "income": income, "payments": payments,
+        "income_total": income_total, "payments_total": payments_total,
+        "left_over": income_total - payments_total,
+        "extra_to": top_debt.name if top_debt and extra > 0 else "",
+    }
+
+
 def _update_plan_totals(plan, desired):
     totals = {"income": Decimal("0.00"), "fixed": Decimal("0.00"),
               "debt": Decimal("0.00"), "savings": Decimal("0.00")}

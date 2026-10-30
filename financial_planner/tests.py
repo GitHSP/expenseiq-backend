@@ -396,3 +396,36 @@ class RecurringPaysDebtTests(TestCase):
         theirs = Debt.objects.create(user=other, name="x", current_balance=1, annual_interest_rate=0, minimum_payment=1)
         res = self.client.post("/api/fp/recurring/", {"label": "x", "amount": "1", "debt": theirs.id}, format="json")
         self.assertEqual(res.status_code, 400)
+
+
+class NextMonthPreviewTests(TestCase):
+    def setUp(self):
+        self.user = make_user()
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.card = Debt.objects.create(user=self.user, name="Card", current_balance=Decimal("1000.00"),
+                                        annual_interest_rate=Decimal("24.00"), minimum_payment=Decimal("50.00"),
+                                        due_day=12, avalanche_order=1)
+        RecurringItem.objects.create(user=self.user, label="Pay", amount=Decimal("1000"), category="income",
+                                     frequency="biweekly", anchor_date=timezone.datetime(2026, 1, 2).date())
+        RecurringItem.objects.create(user=self.user, label="Rent", amount=Decimal("625"), due_day=1,
+                                     category="fixed_expense")
+
+    def test_lists_next_months_payments_without_changing_anything(self):
+        plans = MonthlyPlan.objects.count()
+        res = self.client.get("/api/fp/plans/next/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(MonthlyPlan.objects.count(), plans)
+        self.card.refresh_from_db()
+        self.assertEqual(self.card.current_balance, Decimal("1000.00"))         # no interest applied
+        self.assertEqual([r["label"] for r in res.data["payments"]], ["Rent", "Card minimum payment"])
+        self.assertEqual(res.data["payments_total"], Decimal("675.00"))
+        self.assertEqual(res.data["left_over"], res.data["income_total"] - Decimal("675.00"))
+
+    def test_december_rolls_to_january(self):
+        from datetime import date
+        from .services import preview_next_month
+        out = preview_next_month(self.user, today=date(2026, 12, 15))
+        self.assertEqual((out["year"], out["month"]), (2027, 1))
+        # Biweekly from Jan 2, 2026: Jan 1, 15, 29 of 2027 are paydays.
+        self.assertEqual(len(out["income"]), 3)

@@ -16,6 +16,7 @@ urlpatterns = [
     # ── Monthly Plans ──
     path('plans/',                    views.MonthlyPlanListCreateView.as_view(),      name='fp-plan-list'),
     path('plans/current/',            views.CurrentMonthPlanView.as_view(),           name='fp-plan-current'),
+    path('plans/next/',               views.NextMonthPlanView.as_view(),              name='fp-plan-next'),
     path('plans/rollover/',           views.MonthlyRolloverView.as_view(),            name='fp-plan-rollover'),
     path('plans/generate-checklist/', views.GenerateChecklistView.as_view(),          name='fp-generate-checklist'),
     path('plans/<int:pk>/',           views.MonthlyPlanDetailView.as_view(),          name='fp-plan-detail'),
