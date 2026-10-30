@@ -45,6 +45,46 @@ class InvestmentMathTests(TestCase):
                        payment=Decimal("1000"), rate=Decimal("7"), months=12, maturity_value=Decimal("12500"))
         self.assertEqual(summarize(rd, today=date(2025, 2, 1))["maturity"], "12500.00")
 
+    def test_rd_biweekly_and_weekly_deposits(self):
+        rd = self.make(kind="rd", name="TFSA", start_date=date(2026, 1, 1), payment=Decimal("100"),
+                       payment_frequency="biweekly", rate=Decimal("0"), months=12)
+        s = summarize(rd, today=date(2026, 2, 1))
+        self.assertEqual(s["payments_made"], 3)                    # Jan 1, 15, 29
+        self.assertEqual(s["payments_total"], 27)                  # Jan 1, 2026 to Dec 31, 2026
+        self.assertEqual(s["maturity"], "2700.00")
+        rd.payment_frequency = "weekly"
+        s = summarize(rd, today=date(2026, 2, 1))
+        self.assertEqual(s["payments_made"], 5)
+        self.assertEqual(s["payments_total"], 53)
+
+    def test_rd_weekly_interest_is_close_to_monthly(self):
+        # About the same money in over the year, so about the same interest.
+        weekly = summarize(self.make(kind="rd", name="W", start_date=date(2026, 1, 1), payment=Decimal("100"),
+                                     payment_frequency="weekly", rate=Decimal("6"), compounding="monthly",
+                                     months=12), today=date(2026, 1, 2))
+        interest = Decimal(weekly["interest"])
+        self.assertGreater(interest, Decimal("150"))
+        self.assertLess(interest, Decimal("190"))
+
+    def test_rd_without_an_end_date(self):
+        rd = self.make(kind="rd", name="Wealthsimple", start_date=date(2026, 1, 1), payment=Decimal("50"),
+                       payment_frequency="weekly", rate=Decimal("0"))
+        s = summarize(rd, today=date(2026, 1, 29))
+        self.assertEqual(s["payments_made"], 5)
+        self.assertEqual(s["worth"], "250.00")
+        self.assertIsNone(s["maturity"])
+        self.assertIsNone(s["still_to_pay"])
+        self.assertFalse(s["matured"])
+
+    def test_rd_balance_from_the_app_replaces_the_estimate(self):
+        rd = self.make(kind="rd", name="Wealthsimple", start_date=date(2026, 1, 1), payment=Decimal("50"),
+                       payment_frequency="weekly", rate=Decimal("0"),
+                       current_value=Decimal("1000"), current_value_date=date(2026, 1, 15))
+        s = summarize(rd, today=date(2026, 1, 29))
+        self.assertEqual(s["value_now"], "1100.00")                # + Jan 22 and Jan 29
+        self.assertEqual(s["paid_so_far"], "250.00")
+        self.assertEqual(s["value_basis"], "statement")
+
     def test_insurance_estimate_and_statement_value(self):
         pol = self.make(kind="insurance", name="UL", currency="CAD", start_date=date(2020, 3, 1),
                         payment=Decimal("100"), payment_frequency="monthly", rate=Decimal("0"),
@@ -131,7 +171,7 @@ class InvestmentApiTests(TestCase):
         self.assertEqual(res.data["payments"], [])
 
     def test_validation_and_privacy(self):
-        res = self.client.post("/api/fp/investments/", {"kind": "rd", "name": "RD", "currency": "INR",
+        res = self.client.post("/api/fp/investments/", {"kind": "fd", "name": "FD", "currency": "INR",
                                                          "start_date": "2026-01-01", "payment": "1000"}, format="json")
         self.assertEqual(res.status_code, 400)                     # no tenure
         other = make_user("other@example.test")

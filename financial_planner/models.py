@@ -287,8 +287,8 @@ class Investment(models.Model):
                     ("fd", "Fixed deposit")]
     PAYOUT_CHOICES = [("", "Reinvested (paid at maturity)"), ("monthly", "Paid out monthly"),
                       ("quarterly", "Paid out quarterly"), ("yearly", "Paid out yearly")]
-    FREQUENCY_CHOICES = [("monthly", "Monthly"), ("quarterly", "Quarterly"),
-                         ("half_yearly", "Half-yearly"), ("yearly", "Yearly")]
+    FREQUENCY_CHOICES = [("weekly", "Weekly"), ("biweekly", "Every 2 weeks"), ("monthly", "Monthly"),
+                         ("quarterly", "Quarterly"), ("half_yearly", "Half-yearly"), ("yearly", "Yearly")]
     COMPOUNDING_CHOICES = [("quarterly", "Quarterly"), ("monthly", "Monthly"), ("yearly", "Yearly")]
     DEPOSIT_CHOICES = [("", "Not deposited"), ("chit_company", "With the chit company"), ("bank", "Bank FD")]
 
@@ -302,7 +302,7 @@ class Investment(models.Model):
     recurring_item = models.ForeignKey(RecurringItem, on_delete=models.SET_NULL, null=True, blank=True,
                                        related_name="investments")
 
-    # Premium (insurance) or monthly instalment (chit, RD), and how often it's paid.
+    # Premium (insurance), monthly instalment (chit) or deposit (RD), and how often it's paid.
     payment           = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     payment_frequency = models.CharField(max_length=12, choices=FREQUENCY_CHOICES, default="monthly")
     rate              = models.DecimalField(max_digits=6, decimal_places=3, default=Decimal("0.000"))  # % a year

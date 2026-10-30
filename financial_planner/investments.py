@@ -6,8 +6,10 @@ it comes to at the end. All amounts are in the investment's own currency.
               (insurance, fee, tax) taken monthly; when the user enters the
               cash value from a statement, the projection starts from it.
               Its worth is the cash value less any surrender charge.
-  rd        - each instalment compounds (quarterly for Indian banks) until
-              maturity: sum of P * (1 + r/q) ** (q * months_held / 12).
+  rd        - each deposit (monthly, every 2 weeks or weekly) compounds until
+              maturity: sum of P * (1 + r/q) ** (q * years_held). It may have no
+              end date (e.g. Wealthsimple), and a balance from the statement or
+              app replaces the estimate up to its date.
   fd        - one deposit compounding until maturity, or (interest paid out)
               the deposit stays the same and the interest comes in each period.
   chit      - instalments differ every month, so they're logged; what's left
@@ -15,12 +17,13 @@ it comes to at the end. All amounts are in the investment's own currency.
               in a deposit earning simple interest.
 """
 from calendar import monthrange
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 CENT = Decimal("0.01")
 PER_YEAR = {"monthly": 12, "quarterly": 4, "half_yearly": 2, "yearly": 1}
 COMPOUND = {"quarterly": 4, "monthly": 12, "yearly": 1}
+STEP_DAYS = {"weekly": 7, "biweekly": 14}
 
 
 def _money(v):
@@ -135,31 +138,70 @@ def _rd(inv, today):
     pay = Decimal(inv.payment)
     q = COMPOUND.get(inv.compounding, 4)
     r = Decimal(inv.rate) / 100
+    step = STEP_DAYS.get(inv.payment_frequency)        # None = monthly
+    maturity_date = add_months(inv.start_date, n) if n else None
 
-    def held(months):
-        return pay * (1 + r / q) ** (Decimal(q * months) / 12)
+    def deposit_on(i):
+        return inv.start_date + timedelta(days=step * i) if step else add_months(inv.start_date, i)
 
-    calculated = sum((held(n - i) for i in range(n)), Decimal(0))
+    def deposits_until(limit):
+        # Deposits made up to the limit date, and never on or after maturity.
+        out, i = [], 0
+        while True:
+            d = deposit_on(i)
+            if d > limit or (maturity_date and d >= maturity_date):
+                return out
+            out.append(d)
+            i += 1
+
+    def years(a, b):
+        return Decimal(months_between(a, b)) / 12 if not step else Decimal(max((b - a).days, 0)) / 365
+
+    def grown(amount, a, b):
+        return amount * (1 + r / q) ** (q * years(a, b))
+
+    # A balance from the statement or app replaces the estimate up to its date.
+    base = Decimal(inv.current_value) if inv.current_value is not None else None
+    base_date = (inv.current_value_date or today) if base is not None else None
+
+    def value_at(at):
+        ds = deposits_until(at)
+        if base is None:
+            return sum((grown(pay, d, at) for d in ds), Decimal(0))
+        later = sum((grown(pay, d, at) for d in ds if d > base_date), Decimal(0))
+        return base * (1 + r / q) ** (q * Decimal(max((at - base_date).days, 0)) / 365) + later
+
+    made = len(deposits_until(today))
+    value_now = value_at(today)
+    out = {
+        "paid_so_far": pay * made,
+        "payments_made": made,
+        "value_now": value_now,
+        "value_basis": "statement" if base is not None else "estimate",
+    }
+    if not maturity_date:                               # no end date, e.g. Wealthsimple
+        return {**out, "payments_left": None, "still_to_pay": None, "maturity_date": None,
+                "months_left": None, "calculated_maturity": None, "maturity": None,
+                "interest": value_now - pay * made, "matured": False, "worth": value_now}
+
+    total = len(deposits_until(maturity_date))
+    calculated = value_at(maturity_date)
     maturity = Decimal(inv.maturity_value) if inv.maturity_value is not None else calculated
-    maturity_date = add_months(inv.start_date, n)
-    elapsed = months_between(inv.start_date, today)
-    paid = min(elapsed + 1, n) if today >= inv.start_date else 0
-    if today >= maturity_date:
+    matured = today >= maturity_date
+    if matured:
         value_now = maturity
-    else:
-        value_now = sum((held(elapsed - i) for i in range(paid)), Decimal(0))
     return {
-        "paid_so_far": pay * paid,
-        "payments_made": paid,
-        "payments_left": n - paid,
-        "still_to_pay": pay * (n - paid),
+        **out,
+        "payments_total": total,
+        "payments_left": total - made,
+        "still_to_pay": pay * (total - made),
         "maturity_date": maturity_date.isoformat(),
         "months_left": months_between(today, maturity_date),
         "calculated_maturity": calculated,
         "maturity": maturity,
-        "interest": maturity - pay * n,
+        "interest": maturity - pay * total,
         "value_now": value_now,
-        "matured": today >= maturity_date,
+        "matured": matured,
         "worth": value_now,
     }
 

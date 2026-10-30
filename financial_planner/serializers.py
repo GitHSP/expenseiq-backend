@@ -192,14 +192,18 @@ class InvestmentSerializer(serializers.ModelSerializer):
         def get(f):
             return attrs.get(f, getattr(self.instance, f, None))
         kind = get("kind")
-        if kind in ("rd", "chit", "fd") and not get("months"):
+        if kind in ("chit", "fd") and not get("months"):
             raise serializers.ValidationError({"months": "How many months does it run?"})
         if kind == "chit" and not get("chit_value"):
             raise serializers.ValidationError({"chit_value": "Enter the chit's total value."})
         if kind == "fd" and not get("payment"):
             raise serializers.ValidationError({"payment": "Enter the amount deposited."})
         if kind == "rd" and not get("payment"):
-            raise serializers.ValidationError({"payment": "Enter the monthly instalment."})
+            raise serializers.ValidationError({"payment": "Enter the deposit amount."})
+        allowed = {"rd": ("weekly", "biweekly", "monthly"),
+                   "insurance": ("monthly", "quarterly", "half_yearly", "yearly")}.get(kind)
+        if allowed and (get("payment_frequency") or "monthly") not in allowed:
+            raise serializers.ValidationError({"payment_frequency": "That isn't an option for this investment."})
         if kind == "insurance" and not get("payment"):
             raise serializers.ValidationError({"payment": "Enter the premium."})
         paying, term = get("paying_years"), get("term_years")
