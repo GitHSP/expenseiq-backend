@@ -194,15 +194,16 @@ class RecurringItem(models.Model):
     ]
     frequency   = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default="monthly")
     anchor_date = models.DateField(null=True, blank=True)
-    # Pay that changes every time (hourly work): words from the deposit as the
-    # bank prints it. When set, `amount` is kept at the average of the last
-    # few matching deposits in the uploaded statements.
+    # Pay or a bill that changes every time (hourly work, utilities): words from
+    # the statement line as the bank prints it. When set, `amount` is kept at the
+    # average of the last few matching lines in the uploaded statements.
     average_from = models.CharField(max_length=100, blank=True, default="")
     average_of   = models.PositiveSmallIntegerField(default=0)    # how many deposits the average used
     # The debt this pays (an education loan's EMI): the checklist item becomes
     # that debt's payment — counted once, and ticking it lowers the balance.
     debt = models.ForeignKey("Debt", on_delete=models.SET_NULL, null=True, blank=True, related_name="recurring_payments")
     is_auto_debit = models.BooleanField(default=False)
+    paid_by_card = models.BooleanField(default=False)      # doesn't leave the bank on its date
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
 

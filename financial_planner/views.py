@@ -324,6 +324,26 @@ class InvestmentPaymentView(APIView):
         return self._done(request, inv)
 
 
+class CashFlowView(APIView):
+    """GET /api/fp/cash-flow/?days=60&balance=1200 - the bank balance day by day.
+    balance (today's, in CAD) is optional; else the latest statements' balance."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .cashflow import build_cashflow
+        try:
+            days = min(max(int(request.query_params.get("days", 60)), 7), 180)
+        except ValueError:
+            days = 60
+        try:
+            balance = Decimal(request.query_params["balance"]).quantize(Decimal("0.01"))
+            if not balance.is_finite() or abs(balance) >= 10 ** 10:
+                balance = None
+        except (KeyError, ArithmeticError):
+            balance = None
+        return Response(build_cashflow(request.user, days=days, balance=balance))
+
+
 class OutlookView(APIView):
     """GET /api/fp/outlook/?target_months=36&budget=800 - debt-free dates, what a
     target date takes, and what could help next. budget (a month, in CAD) is optional."""

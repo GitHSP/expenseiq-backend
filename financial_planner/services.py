@@ -470,25 +470,35 @@ def rollover_month(user):
 
 
 def refresh_average_pay(user, only=None):
-    """Keep pay that changes every time at the average of its last few
-    deposits in the uploaded statements (RecurringItem.average_from)."""
+    """Keep pay or a bill that changes every time at the average of its last few
+    lines in the uploaded statements (RecurringItem.average_from). A shared bill
+    averages the user's share of it."""
     from django.db.models import Q
-    from expenses.models import StatementTransaction
+    from expenses.models import MerchantRule, StatementTransaction
+    from expenses.rules import bill_share
     from .models import RecurringItem
-    items = RecurringItem.objects.filter(user=user, category="income").exclude(average_from="")
+    items = RecurringItem.objects.filter(user=user).exclude(average_from="")
+    bill_rules = list(MerchantRule.objects.filter(user=user, treat_as="bill"))
     if only is not None:
         items = items.filter(pk=only.pk)
     changed = False
     for rec in items:
         words = rec.average_from.strip()
-        deposits = list(StatementTransaction.objects.filter(user=user, amount__gt=0).filter(
-            Q(description__icontains=words) | Q(title__icontains=words)).order_by("-date", "-id")[:4])
+        lines = StatementTransaction.objects.filter(user=user).filter(
+            Q(description__icontains=words) | Q(title__icontains=words))
+        lines = lines.filter(amount__gt=0) if rec.category == "income" else lines.filter(amount__lt=0)
+        deposits = list(lines.order_by("-date", "-id")[:4])
         if not deposits:
             if rec.average_of:
                 rec.average_of = 0
                 rec.save(update_fields=["average_of"])
             continue
-        average = (sum(d.amount for d in deposits) / len(deposits)).quantize(Decimal("0.01"))
+        def part(line):
+            paid = abs(line.amount)
+            share = None if rec.category == "income" else bill_share(bill_rules, f"{line.title} {line.description}", paid)
+            return paid if share is None else share
+
+        average = (sum(part(d) for d in deposits) / len(deposits)).quantize(Decimal("0.01"))
         if (rec.amount, rec.average_of, rec.original_currency) != (average, len(deposits), ""):
             rec.amount, rec.average_of = average, len(deposits)
             rec.original_amount, rec.original_currency = None, ""      # statements are in CAD

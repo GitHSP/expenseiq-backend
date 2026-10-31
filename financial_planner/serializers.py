@@ -104,7 +104,7 @@ class RecurringItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'label', 'amount', 'original_amount', 'original_currency', 'due_day', 'category',
             'frequency', 'anchor_date', 'average_from', 'average_of', 'debt',
-            'is_auto_debit', 'is_active', 'notes',
+            'is_auto_debit', 'paid_by_card', 'is_active', 'notes',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'average_of', 'created_at', 'updated_at']
