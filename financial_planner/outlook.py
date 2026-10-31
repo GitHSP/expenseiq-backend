@@ -111,6 +111,10 @@ def budget_for(debts, months):
     return ceil(hi)
 
 
+def _rows(pairs):
+    return [{"label": label, "amount": round(amount, 2)} for label, amount in pairs if abs(amount) >= 0.005]
+
+
 def _averages(user, today):
     """Average monthly income and everyday spending over the last 3 months every
     account's statements fully cover; else what the Planner has planned."""
@@ -137,21 +141,31 @@ def _averages(user, today):
     names = [d.name.lower() for d in Debt.objects.filter(user=user)]
     names += [r.label.lower() for r in RecurringItem.objects.filter(user=user, debt__isnull=False)]
 
-    income = living = 0.0
+    income = living = moved = 0.0
+    by_category = {}
     for ym in months:
         fig = _month_figures(user, ym)
+        for name, value in fig["categories"].items():
+            by_category[name] = by_category.get(name, 0.0) + float(value)
         paying_debts = sum(float(v) for k, v in fig["merchants"].items()
                            if any(n in str(fig["names"].get(k, k)).lower() for n in names))
         income += float(fig["income"])
         living += float(fig["spent"]) - paying_debts
+        moved += float(fig["spent"]) - paying_debts - sum(float(v) for v in fig["categories"].values())
     if months and income > 0:
+        rows = [(name, value / len(months)) for name, value in by_category.items()]
+        rows.sort(key=lambda r: -r[1])
+        if abs(moved) >= 0.5:
+            rows.append(("Less debt payments and roommates' shares", moved / len(months)))
         return {"source": "statements", "months": months, "income": income / len(months),
-                "living": max(living / len(months), 0.0), "latest_statement": latest}
+                "living": max(living / len(months), 0.0), "latest_statement": latest, "spending": _rows(rows)}
 
     planned = RecurringItem.objects.filter(user=user, is_active=True, debt__isnull=True)
     income = sum(float(r.amount) * PER_MONTH.get(r.frequency, 1) for r in planned if r.category == "income")
     living = sum(float(r.amount) * PER_MONTH.get(r.frequency, 1) for r in planned if r.category != "income")
-    return {"source": "plan", "months": [], "income": income, "living": living, "latest_statement": latest}
+    rows = [(r.label, float(r.amount) * PER_MONTH.get(r.frequency, 1)) for r in planned if r.category != "income"]
+    return {"source": "plan", "months": [], "income": income, "living": living, "latest_statement": latest,
+            "spending": _rows(rows)}
 
 
 def _when(months, today):
@@ -269,8 +283,11 @@ def build_outlook(user, target_months=36, budget=None, today=None):
     estimated = pay - avg["living"]
     pay_budget = max(estimated, 0.0)
     pace_budget = budget if budget is not None else pay_budget
-    bills = sum(float(r.amount) * PER_MONTH.get(r.frequency, 1) for r in
-                RecurringItem.objects.filter(user=user, is_active=True, debt__isnull=True).exclude(category="income"))
+    active = RecurringItem.objects.filter(user=user, is_active=True)
+    pay_rows = [(r.label, float(r.amount) * PER_MONTH.get(r.frequency, 1)) for r in active.filter(category="income")]
+    bill_rows = [(r.label, float(r.amount) * PER_MONTH.get(r.frequency, 1))
+                 for r in active.filter(debt__isnull=True).exclude(category="income")]
+    bills = sum(amount for _, amount in bill_rows)
     fund = EmergencyFund.objects.filter(user=user).first()
     savings = float(fund.monthly_contribution) if fund and not fund.is_funded else 0.0
     planner_pay = planned_pay
@@ -294,6 +311,12 @@ def build_outlook(user, target_months=36, budget=None, today=None):
                   "pay": round(pay, 2), "pay_source": latest_pay,
                   "planner_pay": round(planner_pay, 2), "planner_bills": round(bills, 2),
                   "planner_savings": round(savings, 2),
+                  "breakdown": {
+                      "pay": _rows(pay_rows) or _rows([("Average deposits on your statements", avg["income"])]),
+                      "bills": _rows(sorted(bill_rows, key=lambda r: -r[1])),
+                      "spending": avg["spending"],
+                      "minimums": _rows([(d["name"], d["pays"]) for d in debts]),
+                  },
                   "living": round(avg["living"], 2), "estimated_budget": round(estimated, 2),
                   "budget": round(pace_budget, 2), "entered": budget is not None},
         "total_debt": round(sum(d["balance"] for d in debts), 2),

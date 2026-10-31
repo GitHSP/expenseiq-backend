@@ -129,3 +129,11 @@ class OutlookTests(TestCase):
         self.assertEqual(basis["planner_savings"], 100)
         self.assertEqual(planner["budget"], 1400)
         self.assertIsNotNone(planner["months"])
+
+    def test_breakdown_adds_up(self):
+        basis = build_outlook(self.user, today=date(2026, 1, 15))["basis"]
+        parts = basis["breakdown"]
+        self.assertEqual(sum(r["amount"] for r in parts["pay"]), basis["pay"])
+        self.assertEqual(sum(r["amount"] for r in parts["bills"]), basis["planner_bills"])
+        self.assertEqual(sum(r["amount"] for r in parts["spending"]), basis["living"])
+        self.assertEqual(sorted(r["label"] for r in parts["minimums"]), ["Card", "Loan"])
