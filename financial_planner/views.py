@@ -324,6 +324,25 @@ class InvestmentPaymentView(APIView):
         return self._done(request, inv)
 
 
+class OutlookView(APIView):
+    """GET /api/fp/outlook/?target_months=36&budget=800 - debt-free dates, what a
+    target date takes, and what could help next. budget (a month, in CAD) is optional."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .outlook import build_outlook
+        try:
+            target = min(max(int(request.query_params.get("target_months", 36)), 1), 600)
+        except ValueError:
+            target = 36
+        try:
+            budget = float(request.query_params["budget"])
+            budget = budget if 0 <= budget < 10 ** 8 else None      # also drops nan and inf
+        except (KeyError, ValueError):
+            budget = None
+        return Response(build_outlook(request.user, target_months=target, budget=budget))
+
+
 class NetWorthView(APIView):
     """What you own minus what you owe. Bank balances (CAD) come from each
     chequing/savings account's newest statement; investments are in their

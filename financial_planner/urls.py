@@ -27,6 +27,7 @@ urlpatterns = [
     path('investments/<int:pk>/payments/',  views.InvestmentPaymentView.as_view(),    name='fp-investment-payments'),
     path('investments/<int:pk>/payments/<int:payment_id>/', views.InvestmentPaymentView.as_view(),
          name='fp-investment-payment'),
+    path('outlook/',                        views.OutlookView.as_view(),              name='fp-outlook'),
     path('net-worth/',                      views.NetWorthView.as_view(),             name='fp-net-worth'),
 
     # ── Checklist ──
