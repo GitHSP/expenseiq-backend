@@ -137,3 +137,10 @@ class OutlookTests(TestCase):
         self.assertEqual(sum(r["amount"] for r in parts["bills"]), basis["planner_bills"])
         self.assertEqual(sum(r["amount"] for r in parts["spending"]), basis["living"])
         self.assertEqual(sorted(r["label"] for r in parts["minimums"]), ["Card", "Loan"])
+
+    def test_income_needed_with_the_planners_bills(self):
+        EmergencyFund.objects.create(user=self.user, target_amount=Decimal("1000"), monthly_contribution=Decimal("100"))
+        out = build_outlook(self.user, target_months=24, today=date(2026, 1, 15))
+        goal = out["goal"]
+        self.assertEqual(goal["planner_income_needed"], goal["budget"] + 2500 + 100)
+        self.assertEqual(goal["planner_income_gap"], goal["budget"] + 2600 - 4000)

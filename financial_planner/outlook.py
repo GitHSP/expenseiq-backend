@@ -235,7 +235,7 @@ def _actions(user, debts, avg, pace_budget, pace, more, today):
     needed = sum(d["pays"] for d in debts)
     if debts and pace_budget < needed:
         add("warn", "Payments are more than what's left",
-            "Income less spending leaves about {left} a month, but your debts need about {need}.",
+            "You have about {left} a month for debts, but the minimums need about {need}.",
             left=max(pace_budget, 0), need=needed)
     tight = [d for d in debts if d["limit"] and d["limit"] - d["balance"] <= d["limit"] * 0.05]
     if tight:
@@ -330,7 +330,9 @@ def build_outlook(user, target_months=36, budget=None, today=None):
                       "goal": _scenario(goal, debts, today, goal_budget)},
         "goal": {"target_months": target_months, "target_date": add_months(today, target_months).isoformat(),
                  "budget": goal_budget, "income_needed": round(income_needed, 2),
-                 "income_gap": round(income_needed - pay, 2)},
+                 "income_gap": round(income_needed - pay, 2),
+                 "planner_income_needed": round(goal_budget + bills + savings, 2),
+                 "planner_income_gap": round(goal_budget + bills + savings - planner_pay, 2)},
         "debts": [{"id": d["id"], "name": d["name"], "balance": round(d["balance"], 2),
                    "rate": round(d["rate"] * 100, 2),
                    "is_card": d["is_card"], "limit": round(d["limit"], 2) if d["limit"] else None,
