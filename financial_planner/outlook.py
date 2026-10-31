@@ -55,10 +55,11 @@ def simulate(debts, budget=None, max_months=MAX_MONTHS, track=False):
     each debt's first payment, its interest and the balances after every month."""
     bal = {d["id"]: d["balance"] for d in debts}
     finish, interest_total = {}, 0.0
-    first_pay, interest_by, history = {}, {d["id"]: 0.0 for d in debts}, []
+    first_pay, first_min, interest_by, history = {}, {}, {d["id"]: 0.0 for d in debts}, []
     order = sorted(debts, key=lambda d: -d["rate"])     # sort keeps avalanche order on equal rates
     if not debts:
-        return {"months": 0, "interest": 0.0, "finish": finish, "first_pay": {}, "interest_by": {}, "history": []}
+        return {"months": 0, "interest": 0.0, "finish": finish, "first_pay": {}, "first_min": {},
+                "interest_by": {}, "history": []}
     for month in range(1, max_months + 1):
         due = {}
         for d in debts:
@@ -88,6 +89,7 @@ def simulate(debts, budget=None, max_months=MAX_MONTHS, track=False):
                     break
         if month == 1:
             first_pay = {k: before[k] - bal[k] for k in bal}
+            first_min = dict(due)
         for d in debts:
             if bal[d["id"]] <= 0.005:
                 bal[d["id"]] = 0.0
@@ -97,7 +99,7 @@ def simulate(debts, budget=None, max_months=MAX_MONTHS, track=False):
         if len(finish) == len(debts):
             break
     return {"months": month if len(finish) == len(debts) else None, "interest": interest_total, "finish": finish,
-            "first_pay": first_pay, "interest_by": interest_by, "history": history}
+            "first_pay": first_pay, "first_min": first_min, "interest_by": interest_by, "history": history}
 
 
 def budget_for(debts, months):
@@ -184,12 +186,15 @@ def _utilization(debts, history, today):
 
     def reach(ids, target):
         limit = sum(d["limit"] for d in cards if d["id"] in ids)
-        if sum(d["balance"] for d in cards if d["id"] in ids) / limit * 100 < target:
-            return _when(0, today)
+        balance = sum(d["balance"] for d in cards if d["id"] in ids)
+        # What has to come off today's balance to get there, before new interest.
+        amount = {"amount": ceil(max(balance - limit * target / 100, 0))}
+        if balance / limit * 100 < target:
+            return {**_when(0, today), **amount}
         for month, row in enumerate(history, 1):
             if sum(row[i] for i in ids) / limit * 100 < target:
-                return _when(month, today)
-        return _when(None, today)
+                return {**_when(month, today), **amount}
+        return {**_when(None, today), **amount}
 
     every = {d["id"] for d in cards}
     return {"overall": {str(t): reach(every, t) for t in UTILIZATION_TARGETS},
@@ -198,15 +203,19 @@ def _utilization(debts, history, today):
 
 def _scenario(result, debts, today, budget=None):
     months = result["months"]
+    paid = result["first_pay"]
     return {**_when(months, today),
             "interest": round(result["interest"], 2) if months else None,
             "budget": budget,
             "balances": [round(sum(row.values())) for row in result["history"]],
             "debts": {str(d["id"]): {
-                "payment": round(result["first_pay"].get(d["id"], 0), 2),
+                "payment": round(paid.get(d["id"], 0), 2),
+                # The minimum as the Planner has it, so these add up with the debt minimums shown elsewhere.
+                "minimum": round(pay_now if budget is None else min(d["pays"], pay_now), 2),
+                "extra": round(0 if budget is None else max(pay_now - d["pays"], 0), 2),
                 "interest": round(result["interest_by"][d["id"]], 2) if months else None,
                 **_when(result["finish"].get(d["id"]), today),
-            } for d in debts},
+            } for d, pay_now in ((d, paid.get(d["id"], 0)) for d in debts)},
             "utilization": _utilization(debts, result["history"], today)}
 
 

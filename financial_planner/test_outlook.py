@@ -167,3 +167,21 @@ class OutlookTests(TestCase):
         client = APIClient()
         client.force_authenticate(self.user)
         self.assertEqual(client.get("/api/fp/outlook/?debts=abc,").status_code, 200)
+
+    def test_each_payment_splits_into_minimum_and_extra(self):
+        out = build_outlook(self.user, budget=1000.0, today=date(2026, 1, 15))
+        rows = out["scenarios"]["pace"]["debts"]
+        card = next(d["id"] for d in out["debts"] if d["name"] == "Card")
+        loan = next(d["id"] for d in out["debts"] if d["name"] == "Loan")
+        self.assertEqual(rows[str(loan)]["extra"], 0)
+        self.assertEqual(rows[str(loan)]["minimum"], 200)
+        self.assertGreater(rows[str(card)]["extra"], 0)
+        self.assertEqual(rows[str(card)]["minimum"] + rows[str(card)]["extra"], rows[str(card)]["payment"])
+        none = build_outlook(self.user, today=date(2026, 1, 15))["scenarios"]["minimums"]["debts"]
+        self.assertEqual(sum(r["extra"] for r in none.values()), 0)
+
+    def test_usage_targets_show_the_amount_to_pay_down(self):
+        out = build_outlook(self.user, budget=1000.0, today=date(2026, 1, 15))
+        hit = out["scenarios"]["pace"]["utilization"]["overall"]
+        self.assertEqual(hit["50"]["amount"], 2450)                 # 5000 down to 2550
+        self.assertEqual(hit["30"]["amount"], 3470)                 # 5000 down to 1530
