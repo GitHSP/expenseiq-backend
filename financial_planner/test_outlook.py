@@ -144,3 +144,26 @@ class OutlookTests(TestCase):
         goal = out["goal"]
         self.assertEqual(goal["planner_income_needed"], goal["budget"] + 2500 + 100)
         self.assertEqual(goal["planner_income_gap"], goal["budget"] + 2600 - 4000)
+
+    def test_choosing_only_the_card_keeps_paying_the_loan_first(self):
+        card = Debt.objects.get(name="Card").id
+        everything = build_outlook(self.user, target_months=24, today=date(2026, 1, 15))
+        out = build_outlook(self.user, target_months=24, today=date(2026, 1, 15), debt_ids={card})
+        self.assertEqual([d["name"] for d in out["debts"]], ["Card"])
+        self.assertEqual(out["total_debt"], 5000)
+        self.assertEqual(out["other_payments"], 200)
+        self.assertEqual(out["scenarios"]["pay"]["budget"], 1300)         # 1500 less the loan's 200
+        self.assertEqual(out["goal"]["other_payments"], 200)
+        goal = out["goal"]
+        self.assertEqual(goal["income_needed"], goal["budget"] + 200 + 2500)
+        self.assertEqual(goal["minimums"] + goal["extra"], goal["budget"])
+        self.assertLess(out["scenarios"]["pay"]["months"], everything["scenarios"]["pay"]["months"])
+        self.assertEqual(len(out["all_debts"]), 2)
+        self.assertEqual(sum(d["chosen"] for d in out["all_debts"]), 1)
+
+    def test_unknown_debts_fall_back_to_all_and_stay_private(self):
+        out = build_outlook(self.user, today=date(2026, 1, 15), debt_ids={999999})
+        self.assertEqual(len(out["debts"]), 2)
+        client = APIClient()
+        client.force_authenticate(self.user)
+        self.assertEqual(client.get("/api/fp/outlook/?debts=abc,").status_code, 200)

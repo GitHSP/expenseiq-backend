@@ -345,8 +345,9 @@ class CashFlowView(APIView):
 
 
 class OutlookView(APIView):
-    """GET /api/fp/outlook/?target_months=36&budget=800 - debt-free dates, what a
-    target date takes, and what could help next. budget (a month, in CAD) is optional."""
+    """GET /api/fp/outlook/?target_months=36&budget=800&debts=1,2 - debt-free dates,
+    what a target date takes, and what could help next. budget (a month, in CAD,
+    for all debts) and debts (which to look at) are optional."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -360,7 +361,9 @@ class OutlookView(APIView):
             budget = budget if 0 <= budget < 10 ** 8 else None      # also drops nan and inf
         except (KeyError, ValueError):
             budget = None
-        return Response(build_outlook(request.user, target_months=target, budget=budget))
+        chosen = request.query_params.get("debts", "")
+        debt_ids = {int(x) for x in chosen.split(",") if x.strip().isdigit()} or None
+        return Response(build_outlook(request.user, target_months=target, budget=budget, debt_ids=debt_ids))
 
 
 class NetWorthView(APIView):
