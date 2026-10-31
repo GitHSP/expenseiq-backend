@@ -9,6 +9,8 @@ rules, month by month; they're estimates, not financial advice.
   pay      - a fixed amount a month: current pay (the Planner's, else the
              statements' average) less average spending. Minimums come first, what's
              left goes to the highest rate, and a finished debt's payment moves on.
+  planner  - the same, with the Planner's bills (recurring payments and fund
+             savings) in place of what statements show was spent.
   pace     - the same, with the amount the user enters (or the pay figure).
   goal     - the lowest fixed amount that finishes by the target date.
 """
@@ -267,9 +269,16 @@ def build_outlook(user, target_months=36, budget=None, today=None):
     estimated = pay - avg["living"]
     pay_budget = max(estimated, 0.0)
     pace_budget = budget if budget is not None else pay_budget
+    bills = sum(float(r.amount) * PER_MONTH.get(r.frequency, 1) for r in
+                RecurringItem.objects.filter(user=user, is_active=True, debt__isnull=True).exclude(category="income"))
+    fund = EmergencyFund.objects.filter(user=user).first()
+    savings = float(fund.monthly_contribution) if fund and not fund.is_funded else 0.0
+    planner_pay = planned_pay
+    planner_budget = max(planner_pay - bills - savings, 0.0)
 
     minimum = simulate(debts, track=True)
     on_pay = simulate(debts, budget=pay_budget, track=True)
+    on_planner = simulate(debts, budget=planner_budget, track=True)
     pace = simulate(debts, budget=pace_budget, track=True)
     more = simulate(debts, budget=pace_budget + 100)
     # Never below the minimums, even when a far-off date would allow less.
@@ -283,6 +292,8 @@ def build_outlook(user, target_months=36, budget=None, today=None):
         "has_debts": bool(debts),
         "basis": {"source": avg["source"], "months": avg["months"], "income": round(avg["income"], 2),
                   "pay": round(pay, 2), "pay_source": latest_pay,
+                  "planner_pay": round(planner_pay, 2), "planner_bills": round(bills, 2),
+                  "planner_savings": round(savings, 2),
                   "living": round(avg["living"], 2), "estimated_budget": round(estimated, 2),
                   "budget": round(pace_budget, 2), "entered": budget is not None},
         "total_debt": round(sum(d["balance"] for d in debts), 2),
@@ -291,6 +302,7 @@ def build_outlook(user, target_months=36, budget=None, today=None):
         "utilization_targets": list(UTILIZATION_TARGETS),
         "scenarios": {"minimums": _scenario(minimum, debts, today),
                       "pay": _scenario(on_pay, debts, today, round(pay_budget, 2)),
+                      "planner": _scenario(on_planner, debts, today, round(planner_budget, 2)),
                       "pace": _scenario(pace, debts, today, round(pace_budget, 2)),
                       "goal": _scenario(goal, debts, today, goal_budget)},
         "goal": {"target_months": target_months, "target_date": add_months(today, target_months).isoformat(),

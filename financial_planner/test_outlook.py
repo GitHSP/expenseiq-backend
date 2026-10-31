@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from .models import Debt, RecurringItem
+from .models import Debt, EmergencyFund, RecurringItem
 from .outlook import _debts, budget_for, build_outlook, simulate
 
 
@@ -115,3 +115,17 @@ class OutlookTests(TestCase):
         Debt.objects.filter(name="Card").update(current_balance=Decimal("1000"))
         out = build_outlook(self.user, budget=1000.0, today=date(2026, 1, 15))
         self.assertEqual(out["scenarios"]["pace"]["utilization"]["overall"]["30"]["months"], 0)
+
+    def test_planner_projection_uses_planned_bills_and_fund_savings(self):
+        EmergencyFund.objects.create(user=self.user, current_balance=Decimal("0"), target_amount=Decimal("1000"),
+                                     monthly_contribution=Decimal("100"))
+        # The loan's recurring payment counts toward debts, not as a bill.
+        RecurringItem.objects.create(user=self.user, label="Loan payment", amount=Decimal("500"),
+                                     category="fixed_expense", debt=self.loan)
+        out = build_outlook(self.user, today=date(2026, 1, 15))
+        basis, planner = out["basis"], out["scenarios"]["planner"]
+        self.assertEqual(basis["planner_pay"], 4000)
+        self.assertEqual(basis["planner_bills"], 2500)
+        self.assertEqual(basis["planner_savings"], 100)
+        self.assertEqual(planner["budget"], 1400)
+        self.assertIsNotNone(planner["months"])
