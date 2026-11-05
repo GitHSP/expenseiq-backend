@@ -322,8 +322,13 @@ TRANSFER_PATTERNS = re.compile(
 )
 
 EXPENSE_RULES = [
+    # First match wins, so the specific ones come before broad food/shopping words.
+    ("Drinks & Bars",          r"lcbo|beer store|\bsaq\b|bc liquor|liquor|wine rack|\bbar\b|\bpub\b|brewery|brewing|taphouse|tavern"),
+    ("Smoke & Vape",           r"smoke ?shop|\bsmo\b|vape|vapor|tobacco|cigar|hookah|shisha"),
+    ("Loan & BNPL Payments",   r"affirm|klarna|afterpay|sezzle|paybright|upgrade,? inc|loan p(ay)?m(en)?t|student loan|nslsc|osap"),
+    ("Household",              r"coinamatic|laundr|dry ?clean"),
     ("Subscriptions",          r"netflix|spotify|disney\s?\+|disney plus|apple\.com/bill|itunes|youtube premium|google \*|prime video|amazon prime|crave|icloud|adobe|openai|chatgpt|patreon|audible"),
-    ("Food & Dining",          r"tim hortons|starbucks|mcdonald|subway|a&w|wendy|burger|kfc|popeyes|pizza|domino|sushi|restaurant|cafe|coffee|bakery|grill|\bpub\b|uber\s?eats|doordash|skip ?the ?dishes|chipotle|freshii|harvey|mary brown|loblaws|no ?frills|sobeys|\bmetro\b|food basics|freshco|superstore|safeway|save-on|farm boy|t&t|longo|walmart|costco|grocery|fortinos|zehrs|iga\b|foodland"),
+    ("Food & Dining",          r"tim hortons|starbucks|mcdonald|subway|a&w|wendy|burger|kfc|popeyes|pizza|domino|sushi|restaurant|cuisine|cafe|coffee|bakery|grill|uber\s?eats|doordash|skip ?the ?dishes|chipotle|freshii|harvey|mary brown|loblaws|no ?frills|sobeys|\bmetro\b|food basics|freshco|superstore|safeway|save-on|farm boy|t&t|longo|walmart|costco|grocery|fortinos|zehrs|iga\b|foodland"),
     ("Transport",              r"\buber\b(?!\s?eats)|lyft|presto|\bttc\b|go transit|translink|compass card|oc transpo|\bstm\b|via rail|petro|esso|shell|chevron|husky|pioneer|ultramar|\bgas\b|parking|impark|green ?p|indigo park|mto|serviceontario"),
     ("Bills & Utilities",      r"rogers|\bbell\b|telus|fido|koodo|virgin (plus|mobile)|freedom mobile|chatr|public mobile|lucky mobile|hydro|enbridge|fortis|alectra|utilit|internet|monthly fee|service charge|account fee|nsf fee|overdraft"),
     ("Insurance",              r"insurance|intact|manulife|sun life|belair|aviva|desjardins ins|wawanesa|sonnet|square one"),
@@ -339,7 +344,9 @@ EXPENSE_RULES = [
     ("Entertainment",          r"cineplex|ticketmaster|steam|playstation|xbox|nintendo|landmark cinema|eventbrite|bowling|theatre"),
     ("Education & Books",      r"indigo|chapters|coursera|udemy|tuition|university|college|school"),
     ("Gifts & Donations",      r"donation|charity|gofundme|red cross|unicef"),
-    ("Abroad Expense",         r"\bwise\b|transferwise|western union|remitly|moneygram|xoom|remit"),
+    ("Abroad Expense",         r"\bwise\b|transferwise|western union|remitly|moneygram|xoom|remit|lemfi"),
+    # Last: an e-transfer to a person that isn't anything above.
+    ("Transfers to People",    r"e-?transfer|interac|\be-?trf\b"),
 ]
 
 INCOME_RULES = [

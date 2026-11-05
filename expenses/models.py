@@ -23,9 +23,13 @@ class Expense(models.Model):
         ('Medical & Health',       'Medical & Health'),
         ('Education & Books',      'Education & Books'),
         ('Abroad Expense',         'Abroad Expense'),
+        ('Drinks & Bars',          'Drinks & Bars'),
+        ('Smoke & Vape',           'Smoke & Vape'),
+        ('Transfers to People',    'Transfers to People'),
+        ('Loan & BNPL Payments',   'Loan & BNPL Payments'),
+        ('Household',              'Household'),
         ('Other',                  'Other'),
         ('Immigration',            'Immigration'),
-
     ]
 
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='expenses')
