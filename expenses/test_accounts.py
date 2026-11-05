@@ -509,3 +509,43 @@ class SharedBillsTests(TestCase):
         self.assertEqual(month["income"], "0.00")
         self.assertEqual(month["expenses"], "740.00")                     # 2,000 rent − 1,260 shared
         self.assertEqual(apply_all_rules(self.user)["entries_removed"], 0)   # safe to run again
+
+
+class RoommateBalanceTests(TestCase):
+    """A late e-transfer counts toward the running balance, whatever month it posts in."""
+
+    def setUp(self):
+        from datetime import date
+        from expenses.models import Account, MerchantRule, Statement, StatementTransaction
+        self.user = get_user_model().objects.create_user(email="rb@example.test", username="rb", password="x-Test-12345")
+        acc = Account.objects.create(user=self.user, name="Chequing", kind="chequing")
+        st = Statement.objects.create(user=self.user, account=acc, filename="s.pdf",
+                                      period_start=date(2026, 8, 1), period_end=date(2026, 10, 31))
+
+        def row(day, text, amount):
+            StatementTransaction.objects.create(user=self.user, statement=st, account=acc, date=day,
+                                                description=text, title=text, amount=Decimal(amount), kind="skipped")
+        for month in (8, 9, 10):
+            row(date(2026, month, 1), "RENT CO", "-2000.00")
+        row(date(2026, 8, 2), "E-TRANSFER ALEX", "500.00")
+        row(date(2026, 9, 3), "E-TRANSFER ALEX", "500.00")
+        row(date(2026, 10, 2), "E-TRANSFER ALEX", "500.00")      # September's, posted late
+        row(date(2026, 8, 4), "E-TRANSFER JO", "500.00")
+        MerchantRule.objects.create(user=self.user, match="rent co", treat_as="bill", share_amount=Decimal("1000"))
+        for name in ("alex", "jo"):
+            MerchantRule.objects.create(user=self.user, match=name, treat_as="shared")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_running_balance_per_roommate(self):
+        data = self.client.get("/api/statements/summary/").data["roommates"]
+        self.assertEqual((data["since"], data["latest"], data["months"]), ("2026-08", "2026-10", 3))
+        self.assertEqual(data["latest_each"], "500.00")              # (2000 - 1000) / 2
+        people = {p["name"]: p for p in data["people"]}
+        self.assertEqual(people["Alex"], {"name": "Alex", "owed": "1500.00", "paid": "1500.00", "balance": "0.00"})
+        self.assertEqual(people["Jo"]["balance"], "1000.00")
+
+    def test_no_balance_without_my_share(self):
+        from expenses.models import MerchantRule
+        MerchantRule.objects.filter(user=self.user, treat_as="bill").update(share_amount=None)
+        self.assertIsNone(self.client.get("/api/statements/summary/").data["roommates"])

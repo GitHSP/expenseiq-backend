@@ -166,7 +166,31 @@ class MonthlySummaryView(APIView):
         total_in = sum((Decimal(m["income"]) for m in out), Decimal("0"))
         total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
         return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),
-                         "total_net": _money(total_in - total_out)})
+                         "total_net": _money(total_in - total_out),
+                         "roommates": _roommate_balances(months, shared, at_share)})
+
+
+def _roommate_balances(months, shared, at_share):
+    """A running balance per roommate since the first shared bill on the
+    statements, so a late (or early) e-transfer evens out across months.
+    Each roommate owes an equal part of what the bills cost beyond the user's
+    share. Needs "My share" on the bills; without it their part isn't known."""
+    if not (at_share and shared):
+        return None
+    billed = sorted(k for k, v in months.items() if v["bills"])
+    if not billed:
+        return None
+    names = sorted({m.title() for m in shared})
+    since, latest = billed[0], billed[-1]
+    each = {k: (sum(months[k]["bills"].values(), Decimal("0")) - sum(months[k]["mine"].values(), Decimal("0")))
+            / len(names) for k in billed}
+    owed = sum(each.values(), Decimal("0"))
+    people = []
+    for name in names:
+        paid = sum((v["by"].get(name, Decimal("0")) for k, v in months.items() if k >= since), Decimal("0"))
+        people.append({"name": name, "owed": _money(owed), "paid": _money(paid), "balance": _money(owed - paid)})
+    return {"since": since, "latest": latest, "months": len(billed), "latest_each": _money(each[latest]),
+            "people": people}
 
 
 class AccountDetailView(APIView):
