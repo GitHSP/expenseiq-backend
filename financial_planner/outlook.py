@@ -120,6 +120,22 @@ def _rows(pairs):
     return [{"label": label, "amount": round(amount, 2)} for label, amount in pairs if abs(amount) >= 0.005]
 
 
+def last_full_month(user, today):
+    """The latest month every account's statements fully cover ("YYYY-MM"), or None."""
+    from expenses.models import Account, Statement
+    ends = []
+    for acc in Account.objects.filter(user=user):
+        st = Statement.objects.filter(account=acc).order_by("-period_end").first()
+        if st and (today - st.period_end).days <= 90:
+            ends.append(st.period_end)
+    if not ends:
+        return None
+    y, m = min(ends).year, min(ends).month
+    if min(ends).day < monthrange(y, m)[1]:
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)          # that month isn't complete yet
+    return f"{y}-{m:02d}"
+
+
 def _averages(user, today):
     """Average monthly income and everyday spending over the last 3 months every
     account's statements fully cover; else what the Planner has planned."""

@@ -324,6 +324,90 @@ class InvestmentPaymentView(APIView):
         return self._done(request, inv)
 
 
+class DebtHistoryView(APIView):
+    """GET /api/fp/debts/history/ - each card's balance from its statements, and all cards together."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .debt_history import card_history
+        return Response(card_history(request.user, timezone.localdate()))
+
+
+class RemindersView(APIView):
+    """GET /api/fp/reminders/?days=7 - payments due soon, cards near their limit,
+    spending limits nearly used, statements not uploaded for a while."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .reminders import build_reminders
+        try:
+            days = min(max(int(request.query_params.get("days", 7)), 1), 31)
+        except ValueError:
+            days = 7
+        return Response(build_reminders(request.user, days=days))
+
+
+class RecapView(APIView):
+    """GET /api/fp/recap/?month=YYYY-MM - how a month went: income and spending
+    against the month before, planned payments against what was paid, limits."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from assistant.advisor import budget_status, monthly_review, plan_vs_actual
+        from .outlook import last_full_month
+        # By default the latest month every account's statements fully cover:
+        # a half-uploaded month would look like most bills went unpaid.
+        month = request.query_params.get("month") or last_full_month(request.user, timezone.localdate())
+        review = monthly_review(request.user, month=month)
+        if not review.get("ok"):
+            return Response({"error": review.get("message")}, status=status.HTTP_400_BAD_REQUEST)
+        ym = review["month"]
+        plan = plan_vs_actual(request.user, month=ym)
+        if plan.get("items"):
+            # Bills only, once each: not pay, and not the "extra payment" line (it's what was left over).
+            seen, items = set(), []
+            for row in plan["items"]:
+                key = (row["item"].strip().lower(), row["planned"])
+                if row["category"] in ("income", "debt_extra") or key in seen:
+                    continue
+                seen.add(key)
+                items.append(row)
+            plan = {**plan, "items": items}
+        from .debt_history import month_change
+        return Response({"month": ym, "review": review, "plan": plan if plan.get("items") else None,
+                         "cards": month_change(request.user, ym),
+                         "budgets": budget_status(request.user, month=ym)["budgets"]})
+
+
+class BudgetListView(APIView):
+    """GET/POST /api/fp/budgets/ - monthly spending limits by category, with this month's use."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from assistant.advisor import budget_status
+        return Response(budget_status(request.user, month=request.query_params.get("month")))
+
+    def post(self, request):
+        from assistant.personal import set_budget
+        from expenses.models import Expense
+        category = str(request.data.get("category") or "")
+        if category not in {c[0] for c in Expense.CATEGORIES}:
+            return Response({"error": "Pick a category."}, status=status.HTTP_400_BAD_REQUEST)
+        out = set_budget(request.user, label=category, category=category, monthly_limit=request.data.get("monthly_limit"))
+        if not out["ok"]:
+            return Response({"error": out["message"]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(out, status=status.HTTP_201_CREATED)
+
+
+class BudgetDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        from expenses.models import SpendingBudget
+        get_object_or_404(SpendingBudget, pk=pk, user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class CashFlowView(APIView):
     """GET /api/fp/cash-flow/?days=60&balance=1200 - the bank balance day by day.
     balance (today's, in CAD) is optional; else the latest statements' balance."""
@@ -388,4 +472,6 @@ class NetWorthView(APIView):
         for inv in Investment.objects.filter(user=request.user, is_active=True).prefetch_related("payments"):
             investments.append({"id": inv.id, "name": inv.name, "kind": inv.kind, "currency": inv.currency,
                                 "worth": summarize(inv)["worth"]})
-        return Response({"banks": banks, "debts": debts, "investments": investments})
+        from .networth import history
+        trend = [{**h, "banks": str(h["banks"]), "debts": str(h["debts"])} for h in history(request.user)]
+        return Response({"banks": banks, "debts": debts, "investments": investments, "history": trend})

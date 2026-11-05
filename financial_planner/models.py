@@ -358,3 +358,23 @@ class InvestmentPayment(models.Model):
 
     class Meta:
         ordering = ["date", "id"]
+
+
+class NetWorthSnapshot(models.Model):
+    """Net worth for one month: bank balances and debts in CAD, investments by
+    currency (converted at today's rates when shown). `estimated` = worked out
+    from statements for a month before snapshots started."""
+    user        = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="net_worth_snapshots")
+    month       = models.DateField()                       # first of the month
+    banks       = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    debts       = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    investments = models.JSONField(default=dict, blank=True)  # {"CAD": "1200.00", "INR": "50000.00"}
+    estimated   = models.BooleanField(default=False)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["month"]
+        constraints = [models.UniqueConstraint(fields=["user", "month"], name="one_net_worth_snapshot_per_month")]
+
+    def __str__(self):
+        return f"{self.user.email} {self.month:%Y-%m}"

@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     # ── Debts ──
     path('debts/',              views.DebtListCreateView.as_view(),              name='fp-debt-list'),
+    path('debts/history/',      views.DebtHistoryView.as_view(),                 name='fp-debt-history'),
     path('debts/<int:pk>/',     views.DebtDetailView.as_view(),                  name='fp-debt-detail'),
 
     # ── Recurring payments ──
@@ -27,6 +28,10 @@ urlpatterns = [
     path('investments/<int:pk>/payments/',  views.InvestmentPaymentView.as_view(),    name='fp-investment-payments'),
     path('investments/<int:pk>/payments/<int:payment_id>/', views.InvestmentPaymentView.as_view(),
          name='fp-investment-payment'),
+    path('reminders/',                      views.RemindersView.as_view(),            name='fp-reminders'),
+    path('recap/',                          views.RecapView.as_view(),                name='fp-recap'),
+    path('budgets/',                        views.BudgetListView.as_view(),           name='fp-budgets'),
+    path('budgets/<int:pk>/',               views.BudgetDetailView.as_view(),         name='fp-budget-detail'),
     path('cash-flow/',                      views.CashFlowView.as_view(),             name='fp-cash-flow'),
     path('outlook/',                        views.OutlookView.as_view(),              name='fp-outlook'),
     path('net-worth/',                      views.NetWorthView.as_view(),             name='fp-net-worth'),

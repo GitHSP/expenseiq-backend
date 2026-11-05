@@ -396,7 +396,8 @@ def budget_status(user, month=None, **kwargs):
         days, today = end.day, date.today()
         elapsed = (min(today, end) - start).days + 1 if today >= start else 0
         projected = (spent / elapsed * days).quantize(Decimal("0.01"), ROUND_UP) if elapsed and today <= end else spent
-        out.append({"label": b.label, "limit": _money(b.monthly_limit), "spent": _money(spent),
+        out.append({"id": b.id, "label": b.label, "category": b.category,
+                    "limit": _money(b.monthly_limit), "spent": _money(spent),
                     "left": _money(b.monthly_limit - spent), "month": ym,
                     "percent_used": round(float(spent / b.monthly_limit * 100), 1) if b.monthly_limit else 0,
                     "projected_month_end": _money(projected),
