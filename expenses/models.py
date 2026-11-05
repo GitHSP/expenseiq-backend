@@ -152,6 +152,12 @@ class StatementTransaction(models.Model):
     category    = models.CharField(max_length=50, blank=True, default='')
     expense     = models.ForeignKey(Expense, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     income      = models.ForeignKey(Income, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    # A roommate's transfer, as the user sorted it: not for the shared bills
+    # (paying back a meal, say), or for another month's bills than the one it
+    # posted in (September's rent arriving on Oct 2). Set by hand; rules never
+    # change it, and the posted date stays as the bank printed it.
+    not_for_bills = models.BooleanField(default=False)
+    bills_month   = models.DateField(null=True, blank=True)     # first of the month it pays for
 
     class Meta:
         ordering = ['-date', 'id']

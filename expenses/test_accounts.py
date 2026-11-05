@@ -537,15 +537,54 @@ class RoommateBalanceTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_running_balance_per_roommate(self):
-        data = self.client.get("/api/statements/summary/").data["roommates"]
-        self.assertEqual((data["since"], data["latest"], data["months"]), ("2026-08", "2026-10", 3))
-        self.assertEqual(data["latest_each"], "500.00")              # (2000 - 1000) / 2
-        people = {p["name"]: p for p in data["people"]}
-        self.assertEqual(people["Alex"], {"name": "Alex", "owed": "1500.00", "paid": "1500.00", "balance": "0.00"})
-        self.assertEqual(people["Jo"]["balance"], "1000.00")
+    def test_transfers_listed_for_sorting(self):
+        data = self.client.get("/api/statements/summary/").data
+        alex = [t for t in data["shared_transfers"] if t["who"] == "Alex"]
+        self.assertEqual([t["date"] for t in alex], ["2026-10-02", "2026-09-03", "2026-08-02"])
+        self.assertEqual([t["counts_for"] for t in alex], ["2026-10", "2026-09", "2026-08"])
+        self.assertNotIn("roommates", data)
 
-    def test_no_balance_without_my_share(self):
-        from expenses.models import MerchantRule
-        MerchantRule.objects.filter(user=self.user, treat_as="bill").update(share_amount=None)
-        self.assertIsNone(self.client.get("/api/statements/summary/").data["roommates"])
+    def test_a_transfer_marked_not_for_bills_is_left_out(self):
+        from expenses.models import StatementTransaction
+        from expenses.rules import apply_all_rules
+        extra = StatementTransaction.objects.filter(user=self.user, description="E-TRANSFER ALEX").order_by("date").last()
+        res = self.client.patch(f"/api/statements/transactions/{extra.id}/", {"for_bills": False}, format="json")
+        self.assertEqual(res.status_code, 200)
+        apply_all_rules(self.user)                                   # rules don't undo the choice
+        data = self.client.get("/api/statements/summary/").data
+        self.assertIsNone(next(t for t in data["shared_transfers"] if t["id"] == extra.id)["counts_for"])
+        october = next(m for m in data["months"] if m["month"] == "2026-10")
+        self.assertEqual(october["shared_by"], {})
+        self.assertEqual(october["income"], "0.00")                   # still not income
+
+    def test_a_late_transfer_counts_for_the_month_it_pays(self):
+        from expenses.models import StatementTransaction
+        late = StatementTransaction.objects.get(user=self.user, description="E-TRANSFER ALEX", date__month=10)
+        res = self.client.patch(f"/api/statements/transactions/{late.id}/", {"bills_month": "2026-09"}, format="json")
+        self.assertEqual(res.data["bills_month"], "2026-09")
+        late.refresh_from_db()
+        self.assertEqual(str(late.date), "2026-10-02")                # the posted date is kept
+        data = self.client.get("/api/statements/summary/").data
+        months = {m["month"]: m for m in data["months"]}
+        self.assertEqual(months["2026-09"]["shared_by"], {"Alex": "1000.00"})
+        self.assertEqual(months["2026-10"]["shared_by"], {})
+        moved = next(t for t in data["shared_transfers"] if t["id"] == late.id)
+        self.assertEqual((moved["counts_for"], moved["moved"]), ("2026-09", True))
+        # Back to the month it posted in, then not for bills, then for bills again.
+        self.client.patch(f"/api/statements/transactions/{late.id}/", {"bills_month": "2026-10"}, format="json")
+        late.refresh_from_db()
+        self.assertIsNone(late.bills_month)
+        self.client.patch(f"/api/statements/transactions/{late.id}/", {"for_bills": False}, format="json")
+        self.client.patch(f"/api/statements/transactions/{late.id}/", {"bills_month": None}, format="json")
+        late.refresh_from_db()
+        self.assertEqual((late.not_for_bills, late.bills_month), (False, None))
+
+    def test_sorting_checks_input_and_owner(self):
+        from expenses.models import StatementTransaction
+        row = StatementTransaction.objects.filter(user=self.user, description="E-TRANSFER JO").first()
+        self.assertEqual(self.client.patch(f"/api/statements/transactions/{row.id}/", {"bills_month": "Sept"}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/statements/transactions/{row.id}/", {"bills_month": "2026-13"}, format="json").status_code, 400)
+        other = get_user_model().objects.create_user(email="rb2@example.test", username="rb2", password="x-Test-12345")
+        client = APIClient()
+        client.force_authenticate(other)
+        self.assertEqual(client.patch(f"/api/statements/transactions/{row.id}/", {"for_bills": False}, format="json").status_code, 404)

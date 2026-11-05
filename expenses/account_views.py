@@ -125,11 +125,16 @@ class MonthlySummaryView(APIView):
         bills = shared_matchers(request.user, "bill")
         months = {}
         rows = (StatementTransaction.objects.filter(user=request.user)
-                .values_list("date", "amount", "account__kind", "kind", "title", "description"))
-        for d, amount, acct_kind, kind, title, desc in rows:
-            m = months.setdefault(f"{d.year}-{d.month:02d}",
-                                  {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0"), "by": {},
-                                   "bills": {}, "mine": {}})
+                .values_list("id", "date", "amount", "account__kind", "kind", "title", "description",
+                             "not_for_bills", "bills_month"))
+        transfers = {}                           # roommate -> their transfers, to sort by hand
+
+        def month_of(key):
+            return months.setdefault(key, {"income": Decimal("0"), "expenses": Decimal("0"), "shared": Decimal("0"),
+                                           "by": {}, "bills": {}, "mine": {}})
+
+        for row_id, d, amount, acct_kind, kind, title, desc, not_for_bills, bills_month in rows:
+            m = month_of(f"{d.year}-{d.month:02d}")
             text = f"{title} {desc}"
             if kind != "transfer" and is_charge(text) and not (amount > 0 and is_shared(text, shared)):
                 continue                         # interest and fees aren't expenses
@@ -140,9 +145,16 @@ class MonthlySummaryView(APIView):
                 share = bill_share(bill_rules, text, -amount)
                 m["mine"][bill] = m["mine"].get(bill, Decimal("0")) + (share if share is not None else -amount)
             if amount > 0 and acct_kind != "credit_card" and shared and is_shared(f"{title} {desc}", shared):
-                m["shared"] += amount            # a roommate's share of the bills: lowers spending
                 who = shared_name(f"{title} {desc}", shared)
-                m["by"][who] = m["by"].get(who, Decimal("0")) + amount
+                counts_for = None if not_for_bills else f"{(bills_month or d):%Y-%m}"
+                transfers.setdefault(who, []).append({"id": row_id, "who": who, "date": d.isoformat(),
+                                                      "amount": _money(amount), "counts_for": counts_for,
+                                                      "moved": bool(bills_month) and not not_for_bills})
+                if not_for_bills:
+                    continue                     # their money, but not for the bills: not income either
+                owner = month_of(counts_for)     # the month it pays for (usually the one it posted in)
+                owner["shared"] += amount        # a roommate's share of the bills: lowers spending
+                owner["by"][who] = owner["by"].get(who, Decimal("0")) + amount
             elif kind == "transfer":
                 continue
             elif amount > 0 and acct_kind != "credit_card":
@@ -167,30 +179,8 @@ class MonthlySummaryView(APIView):
         total_out = sum((Decimal(m["expenses"]) for m in out), Decimal("0"))
         return Response({"months": out, "total_income": _money(total_in), "total_expenses": _money(total_out),
                          "total_net": _money(total_in - total_out),
-                         "roommates": _roommate_balances(months, shared, at_share)})
-
-
-def _roommate_balances(months, shared, at_share):
-    """A running balance per roommate since the first shared bill on the
-    statements, so a late (or early) e-transfer evens out across months.
-    Each roommate owes an equal part of what the bills cost beyond the user's
-    share. Needs "My share" on the bills; without it their part isn't known."""
-    if not (at_share and shared):
-        return None
-    billed = sorted(k for k, v in months.items() if v["bills"])
-    if not billed:
-        return None
-    names = sorted({m.title() for m in shared})
-    since, latest = billed[0], billed[-1]
-    each = {k: (sum(months[k]["bills"].values(), Decimal("0")) - sum(months[k]["mine"].values(), Decimal("0")))
-            / len(names) for k in billed}
-    owed = sum(each.values(), Decimal("0"))
-    people = []
-    for name in names:
-        paid = sum((v["by"].get(name, Decimal("0")) for k, v in months.items() if k >= since), Decimal("0"))
-        people.append({"name": name, "owed": _money(owed), "paid": _money(paid), "balance": _money(owed - paid)})
-    return {"since": since, "latest": latest, "months": len(billed), "latest_each": _money(each[latest]),
-            "people": people}
+                         "shared_transfers": sorted((t for ts in transfers.values() for t in ts),
+                                                    key=lambda t: t["date"], reverse=True)})
 
 
 class AccountDetailView(APIView):
@@ -345,7 +335,9 @@ class AccountTransactionsView(APIView):
 class TransactionDetailView(APIView):
     """PATCH /api/statements/transactions/<id>/ {kind: expense|income|transfer|skipped, category?}
     Change what a statement row is. An expense or income entry is created
-    for it (or removed), so the dashboard, planner and Aurora follow."""
+    for it (or removed), so the dashboard, planner and Aurora follow.
+    {bills_month: "YYYY-MM" | null} sorts a roommate's transfer: the month's bills it
+    pays for (null = the month it posted in); {for_bills: false} = not for the bills."""
     permission_classes = [IsAuthenticated]
     KINDS = ("expense", "income", "transfer", "skipped")
 
@@ -354,6 +346,21 @@ class TransactionDetailView(APIView):
               .select_related("expense", "income", "statement").first())
         if tx is None:
             return Response({"error": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+        if ("for_bills" in request.data or "bills_month" in request.data) and "kind" not in request.data:
+            if request.data.get("for_bills") is False:
+                tx.not_for_bills, tx.bills_month = True, None
+            else:
+                ym = request.data.get("bills_month")
+                try:
+                    month = date(*map(int, ym.split("-")), 1) if ym else None
+                except (AttributeError, TypeError, ValueError):
+                    return Response({"error": "bills_month must look like 2026-09."}, status=status.HTTP_400_BAD_REQUEST)
+                posted = tx.date.replace(day=1)
+                tx.not_for_bills = False
+                tx.bills_month = None if month == posted else month
+            tx.save(update_fields=["not_for_bills", "bills_month"])
+            return Response({"id": tx.id, "not_for_bills": tx.not_for_bills,
+                             "bills_month": f"{tx.bills_month:%Y-%m}" if tx.bills_month else None})
         kind = request.data.get("kind")
         if kind not in self.KINDS:
             return Response({"error": "kind must be expense, income, transfer or skipped."},
