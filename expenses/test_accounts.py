@@ -380,8 +380,10 @@ class CardDebtTests(TestCase):
                                 ("2026-09-20", "AMAZON.CA", "-176.48", "skipped")])
         self.assertEqual(res.status_code, 201, res.data)
         self.debt.refresh_from_db()
-        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))
+        self.assertEqual(self.debt.current_balance, Decimal("1000"))        # the Planner's balance is the user's
         self.assertEqual((self.debt.minimum_payment, self.debt.credit_limit, self.debt.due_day), (Decimal("70.00"), Decimal("3500.00"), 8))
+        shown = next(d for d in self.client.get("/api/fp/debts/").data if d["name"] == "CIBC Visa")
+        self.assertEqual((shown["statement_balance"], shown["statement_date"]), ("3170.48", "2026-10-14"))
         self.assertEqual(res.data["debts_updated"][0]["debt"], "CIBC Visa")
         self.other.refresh_from_db()
         self.assertEqual(self.other.current_balance, Decimal("500"))       # the RBC debt isn't touched
@@ -391,9 +393,9 @@ class CardDebtTests(TestCase):
 
     def test_an_older_statement_doesnt_overwrite_a_newer_balance(self):
         self.import_card("3494.00", "3170.48", "2026-10-14", [("2026-10-02", "PAYMENT", "500.00", "transfer")])
-        self.import_card("3200.00", "3494.00", "2026-09-14", [("2026-09-02", "PAYMENT", "100.00", "transfer")])
+        self.import_card("3200.00", "3494.00", "2026-09-14", [("2026-09-02", "PAYMENT", "100.00", "transfer")], minimum="50.00")
         self.debt.refresh_from_db()
-        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))
+        self.assertEqual(self.debt.minimum_payment, Decimal("70.00"))      # still the newer statement's
 
     def test_card_history_and_payments_since(self):
         self.import_card("3494.00", "3170.48", "2026-10-14",
@@ -421,16 +423,16 @@ class CardDebtTests(TestCase):
         res = self.client.patch(f"/api/statements/accounts/{account.id}/", {"debt": self.other.id}, format="json")
         self.assertEqual(res.status_code, 200, res.data)
         self.other.refresh_from_db()
-        self.assertEqual(self.other.current_balance, Decimal("3170.48"))
+        self.assertEqual((self.other.current_balance, self.other.minimum_payment), (Decimal("500"), Decimal("70.00")))
 
-    def test_planner_interest_skips_cards_kept_up_to_date_by_statements(self):
+    def test_planner_interest_applies_to_every_card(self):
         from datetime import date as d
         from financial_planner.services import _apply_monthly_interest
         self.import_card("3494.00", "3170.48", d.today().isoformat(), [(d.today().isoformat(), "PAYMENT", "500.00", "transfer")])
         _apply_monthly_interest(self.user, 1)
         self.debt.refresh_from_db(); self.other.refresh_from_db()
-        self.assertEqual(self.debt.current_balance, Decimal("3170.48"))       # unchanged
-        self.assertGreater(self.other.current_balance, Decimal("500"))         # estimated interest as before
+        self.assertGreater(self.debt.current_balance, Decimal("1000"))        # statements don't set it, so interest is added
+        self.assertGreater(self.other.current_balance, Decimal("500"))
 
     def test_monthly_summary_leaves_out_transfers(self):
         self.import_card("3494.00", "3170.48", "2026-10-14",

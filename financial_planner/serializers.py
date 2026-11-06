@@ -14,6 +14,24 @@ class DebtSerializer(serializers.ModelSerializer):
     monthly_interest_rate  = serializers.DecimalField(max_digits=10, decimal_places=6, read_only=True)
     utilization_percent    = serializers.FloatField(read_only=True)
     monthly_interest_amount= serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    # The closing balance on the linked card's newest statement, beside the Planner's own.
+    statement_balance      = serializers.SerializerMethodField()
+    statement_date         = serializers.SerializerMethodField()
+
+    def _statement(self, obj):
+        if not hasattr(obj, "_latest_statement"):
+            from expenses.models import Statement
+            obj._latest_statement = (Statement.objects.filter(account__debt=obj, new_balance__isnull=False)
+                                     .order_by("-period_end", "-id").first())
+        return obj._latest_statement
+
+    def get_statement_balance(self, obj):
+        st = self._statement(obj)
+        return str(max(st.new_balance, Decimal("0.00"))) if st else None
+
+    def get_statement_date(self, obj):
+        st = self._statement(obj)
+        return st.period_end.isoformat() if st else None
 
     class Meta:
         model  = Debt
@@ -29,6 +47,7 @@ class DebtSerializer(serializers.ModelSerializer):
             'monthly_interest_rate',
             'utilization_percent',
             'monthly_interest_amount',
+            'statement_balance', 'statement_date',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 

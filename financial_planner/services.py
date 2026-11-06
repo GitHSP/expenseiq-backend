@@ -328,19 +328,14 @@ def sync_month_checklist(plan):
 
 def _apply_monthly_interest(user, months, label=""):
     """Add `months` months of interest to every active debt (compounded monthly).
-    Cards kept up to date from a recent statement are skipped: the
-    statement's balance already includes the interest actually charged."""
-    from datetime import date, timedelta
-    from expenses.models import Account
+    Every debt, cards included: statements don't set the Planner's balance,
+    so without this it would look lower than what's really owed."""
     from .models import Debt
     debts = list(Debt.objects.filter(user=user, is_active=True))
-    from_statements = set(Account.objects.filter(
-        user=user, debt__isnull=False, debt_synced_through__gte=date.today() - timedelta(days=45),
-    ).values_list("debt_id", flat=True))
     reason = f"Monthly interest{f' ({label})' if label else ''}" + (f" × {months} months" if months > 1 else "")
     with activity_context(source="system", reason=reason):
         for debt in debts:
-            if months <= 0 or debt.annual_interest_rate <= 0 or debt.id in from_statements:
+            if months <= 0 or debt.annual_interest_rate <= 0:
                 continue
             fields = ["current_balance", "updated_at"]
             for _ in range(months):

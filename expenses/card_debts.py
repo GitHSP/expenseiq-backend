@@ -1,8 +1,10 @@
 # expenses/card_debts.py
 #
 # Credit-card accounts and their Planner debts: each card is linked to a
-# debt (matched by name, or chosen by the user), and the debt's balance,
-# minimum payment, limit and due day follow the card's newest statement.
+# debt (matched by name, or chosen by the user), and the debt's minimum
+# payment, limit and due day follow the card's newest statement. The balance
+# doesn't: the Planner's balance is the user's own (lowered by the payments
+# they tick), and the statement's closing balance is shown beside it.
 # Also: payments made to a card from the user's bank accounts since that
 # statement, so the balance stays current between statements.
 
@@ -38,7 +40,7 @@ def sync_debt(account, force=False):
         return None
     if not force and account.debt_synced_through and latest.period_end < account.debt_synced_through:
         return None          # an older statement: the debt already reflects a newer one
-    changes = {"current_balance": max(latest.new_balance, Decimal("0.00"))}
+    changes = {}
     if latest.minimum_payment is not None:
         changes["minimum_payment"] = latest.minimum_payment
     if latest.credit_limit is not None:
@@ -55,7 +57,8 @@ def sync_debt(account, force=False):
     if account.debt_synced_through != latest.period_end:
         account.debt_synced_through = latest.period_end
         account.save(update_fields=["debt_synced_through"])
-    return {"account": account.name, "debt": debt.name, "balance": str(debt.current_balance)} if changed else None
+    return {"account": account.name, "debt": debt.name, "balance": str(debt.current_balance),
+            "statement_balance": str(max(latest.new_balance, Decimal("0.00")))} if changed else None
 
 
 def _card_words(account):
