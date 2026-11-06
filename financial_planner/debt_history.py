@@ -28,7 +28,8 @@ def card_history(user, today):
              for debt_id, p in cards.items()}
 
     total = []
-    y, m = today.year, today.month
+    newest = max((rows[-1][0] for rows in by_account.values()), default=today)
+    y, m = min(newest, today).year, min(newest, today).month      # end at the last month a statement came in
     for _ in range(POINTS):
         end = date(y, m, monthrange(y, m)[1])
         known = [next((b for d, b in reversed(rows) if d <= end), None) for rows in by_account.values()]

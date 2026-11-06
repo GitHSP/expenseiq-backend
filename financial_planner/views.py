@@ -196,9 +196,9 @@ class ChecklistItemDetailView(generics.RetrieveUpdateDestroyAPIView):
 class ChecklistItemToggleView(APIView):
     """
     POST /api/fp/checklist/<pk>/toggle/
-    Toggles is_completed.
+    Toggles is_completed. Optional {amount}: what was actually paid (CAD).
     If item has a linked_debt and category is debt_min/debt_extra,
-    reduces the debt balance by the item amount.
+    reduces the debt balance by that amount (or the item's).
     If item is savings, adds to emergency fund.
     """
     permission_classes = [IsAuthenticated]
@@ -210,7 +210,15 @@ class ChecklistItemToggleView(APIView):
             monthly_plan__user=request.user
         )
 
-        item, debt, fund = toggle_checklist_item(item)
+        paid = None
+        if request.data.get("amount") not in (None, ""):
+            try:
+                paid = Decimal(str(request.data["amount"])).quantize(Decimal("0.01"))
+            except ArithmeticError:
+                return Response({"error": "amount must be a number."}, status=status.HTTP_400_BAD_REQUEST)
+            if not paid.is_finite() or not Decimal("0") < paid < Decimal("100000000"):
+                return Response({"error": "amount must be more than 0."}, status=status.HTTP_400_BAD_REQUEST)
+        item, debt, fund = toggle_checklist_item(item, paid=paid)
 
         return Response({
             "item":         ChecklistItemSerializer(item).data,
@@ -460,7 +468,7 @@ class NetWorthView(APIView):
         from expenses.models import Account, Statement
         from .investments import summarize
         banks = []
-        for acc in Account.objects.filter(user=request.user, kind__in=("chequing", "savings")):
+        for acc in Account.objects.filter(user=request.user, kind__in=("chequing", "savings"), closed=False):
             st = (Statement.objects.filter(account=acc, new_balance__isnull=False)
                   .order_by("-period_end").first())
             banks.append({"id": acc.id, "name": acc.name, "currency": "CAD",

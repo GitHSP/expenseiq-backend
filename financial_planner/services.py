@@ -16,7 +16,7 @@ MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
                "August", "September", "October", "November", "December"]
 
 
-def toggle_checklist_item(item):
+def toggle_checklist_item(item, paid=None):
     """
     Toggle a ChecklistItem's is_completed flag and apply the same side
     effects the app has always had:
@@ -24,7 +24,8 @@ def toggle_checklist_item(item):
         that debt's current_balance (and marks it paid off at zero)
       - ticking ON a savings item adds its amount to the user's emergency
         fund (capped at the target)
-    Unticking never triggers these side effects.
+    Unticking never triggers these side effects. `paid` (CAD) is what was
+    actually paid when it differs from the planned amount, e.g. extra on a card.
 
     Returns (item, debt_updated_or_None, fund_updated_or_None) — the debt
     and fund are the actual model instances (callers serialize as needed).
@@ -34,6 +35,7 @@ def toggle_checklist_item(item):
     was_completed = item.is_completed
     item.is_completed = not item.is_completed
     item.completed_at = timezone.now() if item.is_completed else None
+    item.paid_amount = paid if item.is_completed else None
     item.save()
 
     debt_updated = None
@@ -51,12 +53,12 @@ def toggle_checklist_item(item):
             item.category in ["debt_min", "debt_extra"]
         ):
             debt = item.linked_debt
-            reduction = Decimal(str(item.amount))
+            reduction = Decimal(str(paid if paid is not None else item.amount))
             debt.current_balance = max(
                 Decimal("0.00"),
                 debt.current_balance - reduction
             )
-            if (debt.original_currency and item.original_currency == debt.original_currency
+            if (paid is None and debt.original_currency and item.original_currency == debt.original_currency
                     and item.original_amount is not None and debt.original_current_balance is not None):
                 # Paid in the debt's own currency: take off exactly that (₹30,000).
                 debt.original_current_balance = max(Decimal("0.00"), debt.original_current_balance - item.original_amount)

@@ -69,6 +69,7 @@ class AccountListView(APIView):
         return Response({
             "accounts": [{
                 "id": a.id, "name": a.name, "kind": a.kind, "institution": a.institution, "last4": a.last4,
+                "closed": a.closed,
                 "transaction_count": tx_stats.get(a.id, {}).get("count", 0),
                 "first_date": tx_stats[a.id]["first"].isoformat() if a.id in tx_stats else None,
                 "last_date": tx_stats[a.id]["last"].isoformat() if a.id in tx_stats else None,
@@ -184,7 +185,7 @@ class MonthlySummaryView(APIView):
 
 
 class AccountDetailView(APIView):
-    """PATCH /api/statements/accounts/<id>/ {name?, kind?} · DELETE removes the account
+    """PATCH /api/statements/accounts/<id>/ {name?, kind?, closed?} · DELETE removes the account
     and its statements (expenses and income already saved from them stay)."""
     permission_classes = [IsAuthenticated]
 
@@ -208,6 +209,10 @@ class AccountDetailView(APIView):
             if kind not in dict(Account.KINDS):
                 return Response({"error": "Unknown account type."}, status=status.HTTP_400_BAD_REQUEST)
             account.kind = kind
+        if "closed" in request.data:
+            if not isinstance(request.data["closed"], bool):
+                return Response({"error": "closed must be true or false."}, status=status.HTTP_400_BAD_REQUEST)
+            account.closed = request.data["closed"]
         relink = "debt" in request.data
         if relink:
             from financial_planner.models import Debt
@@ -220,7 +225,7 @@ class AccountDetailView(APIView):
             account.debt, account.debt_synced_through = debt, None
         account.save()
         synced = sync_debt(account, force=True) if relink and account.debt else None
-        return Response({"id": account.id, "name": account.name, "kind": account.kind,
+        return Response({"id": account.id, "name": account.name, "kind": account.kind, "closed": account.closed,
                          "debt": account.debt_id, "debt_updated": synced})
 
     def delete(self, request, pk):

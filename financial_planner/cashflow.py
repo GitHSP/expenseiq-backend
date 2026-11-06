@@ -26,7 +26,7 @@ def _months(start, end):
 def _start_balance(user):
     from expenses.models import Account, Statement
     total, as_of, found = Decimal("0.00"), None, False
-    for acc in Account.objects.filter(user=user, kind__in=("chequing", "savings")):
+    for acc in Account.objects.filter(user=user, kind__in=("chequing", "savings"), closed=False):
         st = Statement.objects.filter(account=acc, new_balance__isnull=False).order_by("-period_end").first()
         if st:
             found = True

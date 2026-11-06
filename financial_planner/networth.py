@@ -39,7 +39,7 @@ def record(user, today=None):
     from expenses.models import Account, Statement
     today = today or timezone.localdate()
     banks = D0
-    for acc in Account.objects.filter(user=user, kind__in=("chequing", "savings")):
+    for acc in Account.objects.filter(user=user, kind__in=("chequing", "savings"), closed=False):
         st = Statement.objects.filter(account=acc, new_balance__isnull=False).order_by("-period_end").first()
         banks += st.new_balance if st else D0
     debts = sum((d.current_balance for d in Debt.objects.filter(user=user, is_active=True, current_balance__gt=0)), D0)

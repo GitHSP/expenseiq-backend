@@ -247,6 +247,8 @@ class ChecklistItem(models.Model):
     is_auto_debit = models.BooleanField(default=False)  # triggers ⚠️ warning
     is_completed = models.BooleanField(default=False)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # What was actually paid when it was ticked, if not the planned amount (an extra card payment).
+    paid_amount  = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     sort_order = models.PositiveSmallIntegerField(default=0)
 
     linked_debt = models.ForeignKey(

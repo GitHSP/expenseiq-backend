@@ -124,7 +124,7 @@ def last_full_month(user, today):
     """The latest month every account's statements fully cover ("YYYY-MM"), or None."""
     from expenses.models import Account, Statement
     ends = []
-    for acc in Account.objects.filter(user=user):
+    for acc in Account.objects.filter(user=user, closed=False):
         st = Statement.objects.filter(account=acc).order_by("-period_end").first()
         if st and (today - st.period_end).days <= 90:
             ends.append(st.period_end)
@@ -143,7 +143,7 @@ def _averages(user, today):
     from expenses.models import Account, Statement
 
     ends = []
-    for acc in Account.objects.filter(user=user):
+    for acc in Account.objects.filter(user=user, closed=False):
         st = Statement.objects.filter(account=acc).order_by("-period_end").first()
         if st and (today - st.period_end).days <= 90:
             ends.append(st.period_end)

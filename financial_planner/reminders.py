@@ -63,7 +63,7 @@ def _budgets(user, today):
 def _uploads(user, today):
     from expenses.models import Account, Statement
     out = []
-    for acc in Account.objects.filter(user=user):
+    for acc in Account.objects.filter(user=user, closed=False):
         st = Statement.objects.filter(account=acc).order_by("-period_end").first()
         if st and (today - st.period_end).days > UPLOAD_AFTER_DAYS:
             out.append({"type": "upload", "label": acc.name, "through": st.period_end.isoformat()})

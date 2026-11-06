@@ -105,6 +105,9 @@ class Account(models.Model):
     debt        = models.ForeignKey('financial_planner.Debt', on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name='statement_accounts')
     debt_synced_through = models.DateField(null=True, blank=True)    # period end of the statement last applied
+    # No longer used (salary moved elsewhere): no upload reminders, and its last
+    # balance isn't counted as money the user has now. Its history stays.
+    closed      = models.BooleanField(default=False)
     created_at  = models.DateTimeField(auto_now_add=True)
 
     class Meta:

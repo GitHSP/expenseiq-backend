@@ -82,9 +82,9 @@ class ChecklistItemSerializer(serializers.ModelSerializer):
             'amount', 'original_amount', 'original_currency', 'due_day', 'category',
             'is_auto_debit', 'is_completed',
             'completed_at', 'sort_order', 'linked_debt',
-            'recurring_item',
+            'recurring_item', 'paid_amount',
         ]
-        read_only_fields = ['id', 'completed_at', 'recurring_item']
+        read_only_fields = ['id', 'completed_at', 'recurring_item', 'paid_amount']
 
     def validate(self, attrs):
         return clean_original(attrs, self.instance)
