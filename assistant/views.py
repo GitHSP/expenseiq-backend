@@ -90,22 +90,24 @@ CLAIMS_CHANGE = re.compile(
 )
 
 
+OFFLINE_NOTE = ("I can't reach my AI right now, so I can't answer that one. "
+                "Common questions still work, any time and for free. ")
+
+
 class ChatView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not settings.ANTHROPIC_API_KEY:
-            return Response(
-                {
-                    "error": (
-                        "The assistant isn't set up yet. Add ANTHROPIC_API_KEY to the backend "
-                        ".env (get one at console.anthropic.com) to enable it."
-                    )
-                },
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
+        from .quick import answer, help_text
         raw_messages = request.data.get("messages")
+        # Common questions are answered from the user's figures, with no AI call.
+        if isinstance(raw_messages, list) and raw_messages and isinstance(raw_messages[-1], dict)                 and raw_messages[-1].get("role") == "user" and isinstance(raw_messages[-1].get("content"), str):
+            quick = answer(request.user, raw_messages[-1]["content"])
+            if quick:
+                return Response({"reply": quick["reply"], "actions": [], "quick": True})
+        if not settings.ANTHROPIC_API_KEY:
+            return Response({"reply": OFFLINE_NOTE + help_text(request.user, "", None), "actions": [], "quick": True})
+
         if not isinstance(raw_messages, list) or not raw_messages:
             return Response({"error": "messages must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -226,11 +228,9 @@ class ChatView(APIView):
             })
 
         except anthropic.APIError:
+            # Out of credits, or the service is down: still offer what works without it.
             logger.exception("Anthropic API error in assistant chat")
-            return Response(
-                {"error": "The assistant is temporarily unavailable. Please try again in a moment."},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return Response({"reply": OFFLINE_NOTE + help_text(request.user, "", None), "actions": [], "quick": True})
 
 
 # ─────────────────────────────────────────────

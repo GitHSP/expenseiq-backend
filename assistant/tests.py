@@ -208,7 +208,7 @@ class SearchThroughChatTests(SearchTransactionsToolTests):
              mock.patch("assistant.views.settings.ANTHROPIC_API_KEY", "test-key"):
             A.return_value.messages.create.side_effect = [NS(stop_reason="tool_use", content=[call]), answer]
             res = client.post("/api/assistant/chat/", {"messages": [
-                {"role": "user", "content": "How much did I spend on coffee, and on which card?"}]}, format="json")
+                {"role": "user", "content": "Walk me through my coffee habit and what to change"}]}, format="json")
             history = A.return_value.messages.create.call_args_list[1].kwargs["messages"]
             sent = next(block["content"] for m in history if m["role"] == "user" and isinstance(m["content"], list)
                         for block in m["content"] if isinstance(block, dict) and block.get("type") == "tool_result")
