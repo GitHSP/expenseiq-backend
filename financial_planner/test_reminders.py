@@ -56,8 +56,14 @@ class ReminderTests(TestCase):
         with mock.patch("financial_planner.reminders.timezone.localdate", return_value=self.today):
             call_command("send_reminders", stdout=StringIO())
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("Phone: $50.00 due in 2 days", mail.outbox[0].body)
-        self.assertEqual(mail.outbox[0].to, ["r@example.test"])
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ["r@example.test"])
+        self.assertEqual(msg.subject, "Glacier: 1 payment due this week · CA$50.00")    # the card is due after 3 days
+        self.assertIn("Phone  CA$50.00", msg.body)                     # plain-text version
+        html, kind = msg.alternatives[0]
+        self.assertEqual(kind, "text/html")
+        self.assertIn("Open Glacier", html)
+        self.assertIn("Cards near their limit", html)
 
 
 class BudgetApiTests(TestCase):
