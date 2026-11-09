@@ -109,3 +109,71 @@ class RecapTests(TestCase):
             data = client.get("/api/fp/recap/").data
         self.assertEqual(data["month"], "2026-08")             # the card's statement ends Sep 21, so Sep isn't whole
         self.assertEqual([r["item"] for r in data["plan"]["items"]], ["Rent"])
+
+
+class StatementCloseAndChangeTests(TestCase):
+    def setUp(self):
+        from expenses.models import Account, Statement, StatementTransaction
+        self.user = get_user_model().objects.create_user(email="sc@example.test", username="sc", password="x-Test-12345")
+        self.card = Debt.objects.create(user=self.user, name="Visa", current_balance=Decimal("800"), credit_limit=Decimal("1000"),
+                                        annual_interest_rate=Decimal("20"), minimum_payment=Decimal("25"))
+        acc = Account.objects.create(user=self.user, name="Visa card", kind="credit_card", debt=self.card)
+        self.st = Statement.objects.create(user=self.user, account=acc, filename="v.pdf", period_start=date(2026, 2, 16),
+                                           period_end=date(2026, 3, 15), new_balance=Decimal("800"))
+        # Four months at the usual price, then a higher one.
+        for day, amt in ((date(2025, 11, 5), "15.99"), (date(2025, 12, 5), "15.99"), (date(2026, 1, 5), "15.99"),
+                         (date(2026, 2, 5), "15.99"), (date(2026, 3, 5), "22.99")):
+            StatementTransaction.objects.create(user=self.user, statement=self.st, account=acc, date=day,
+                                                description="STREAMCO", title="StreamCo", amount=-Decimal(amt), kind="expense",
+                                                category="Subscriptions")
+
+    def test_card_closing_soon_and_amount_to_get_under_30(self):
+        r = build_reminders(self.user, today=date(2026, 4, 10))
+        self.assertEqual(r["closing"], [{"type": "close", "label": "Visa", "date": "2026-04-15", "days": 5,
+                                         "percent": 80, "to_target": Decimal("500.00")}])
+        self.assertEqual(build_reminders(self.user, today=date(2026, 4, 1))["closing"], [])   # 14 days away
+        Debt.objects.filter(pk=self.card.pk).update(current_balance=Decimal("200"))
+        self.assertEqual(build_reminders(self.user, today=date(2026, 4, 10))["closing"], [])  # already under 30%
+
+    def test_price_went_up(self):
+        changes = build_reminders(self.user, today=date(2026, 3, 20))["changes"]
+        self.assertEqual([(c["kind"], c["label"], c["amount"], c["usual"]) for c in changes],
+                         [("up", "StreamCo", Decimal("22.99"), Decimal("15.99"))])
+
+
+class SavingsGoalTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="sg@example.test", username="sg", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_goal_progress_and_adding_money(self):
+        res = self.client.post("/api/fp/goals/", {"name": "Trip", "target": "1200", "target_date": "2099-12-01"}, format="json")
+        self.assertEqual(res.status_code, 201)
+        gid = res.data["id"]
+        res = self.client.patch(f"/api/fp/goals/{gid}/", {"add": "300"}, format="json")
+        self.assertEqual((res.data["saved"], res.data["left"], res.data["percent"]), ("300.00", "900.00", 25.0))
+        self.assertIsNotNone(res.data["monthly"])
+        res = self.client.patch(f"/api/fp/goals/{gid}/", {"add": "-500"}, format="json")
+        self.assertEqual(res.data["saved"], "0.00")                       # never below zero
+        self.assertEqual(self.client.post("/api/fp/goals/", {"name": "x", "target": "10"}, format="json").status_code, 400)
+        other = get_user_model().objects.create_user(email="sh@example.test", username="sh", password="x-Test-12345")
+        client = APIClient()
+        client.force_authenticate(other)
+        self.assertEqual(client.patch(f"/api/fp/goals/{gid}/", {"add": "5"}, format="json").status_code, 404)
+
+class WeeklySummaryTests(TestCase):
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_weekly_email(self):
+        from unittest import mock
+        user = get_user_model().objects.create_user(email="w@example.test", username="w", password="x-Test-12345")
+        Expense.objects.create(user=user, title="Lunch", amount=Decimal("40"), category="Food & Dining", date=date(2026, 3, 12))
+        Expense.objects.create(user=user, title="Older", amount=Decimal("80"), category="Food & Dining", date=date(2026, 2, 20))
+        with mock.patch("financial_planner.weekly.timezone.localdate", return_value=date(2026, 3, 15)), \
+             mock.patch("financial_planner.reminders.timezone.localdate", return_value=date(2026, 3, 15)), \
+             mock.patch("financial_planner.management.commands.send_reminders.timezone.localdate", return_value=date(2026, 3, 15)):
+            call_command("send_reminders", stdout=StringIO())                 # Mar 15, 2026 is a Sunday
+        weekly = [m for m in mail.outbox if "Your week" in m.subject]
+        self.assertEqual(len(weekly), 1)
+        self.assertEqual(weekly[0].subject, "Glacier: Your week: CA$40.00 spent, CA$30.00 more than usual")
+        self.assertIn("Food &amp; Dining", weekly[0].alternatives[0][0])

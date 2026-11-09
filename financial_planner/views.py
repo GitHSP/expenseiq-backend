@@ -332,6 +332,49 @@ class InvestmentPaymentView(APIView):
         return self._done(request, inv)
 
 
+class SavingsGoalListView(generics.ListCreateAPIView):
+    """GET/POST /api/fp/goals/ - the user's savings goals."""
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        from .serializers import SavingsGoalSerializer
+        return SavingsGoalSerializer
+
+    def get_queryset(self):
+        from .models import SavingsGoal
+        return SavingsGoal.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class SavingsGoalDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """PATCH /api/fp/goals/<id>/ {name?, target?, target_date?, saved?} or {add: 50} (money put aside; negative takes out)."""
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        from .serializers import SavingsGoalSerializer
+        return SavingsGoalSerializer
+
+    def get_queryset(self):
+        from .models import SavingsGoal
+        return SavingsGoal.objects.filter(user=self.request.user)
+
+    def partial_update(self, request, *args, **kwargs):
+        if "add" in request.data:
+            goal = self.get_object()
+            try:
+                add = Decimal(str(request.data["add"])).quantize(Decimal("0.01"))
+            except ArithmeticError:
+                return Response({"error": "add must be an amount."}, status=status.HTTP_400_BAD_REQUEST)
+            if not add.is_finite() or abs(add) >= Decimal("100000000"):
+                return Response({"error": "add must be an amount."}, status=status.HTTP_400_BAD_REQUEST)
+            goal.saved = max(goal.saved + add, Decimal("0.00"))
+            goal.save(update_fields=["saved"])
+            return Response(self.get_serializer(goal).data)
+        return super().partial_update(request, *args, **kwargs)
+
+
 class DebtHistoryView(APIView):
     """GET /api/fp/debts/history/ - each card's balance from its statements, and all cards together."""
     permission_classes = [IsAuthenticated]

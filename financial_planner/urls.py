@@ -28,6 +28,8 @@ urlpatterns = [
     path('investments/<int:pk>/payments/',  views.InvestmentPaymentView.as_view(),    name='fp-investment-payments'),
     path('investments/<int:pk>/payments/<int:payment_id>/', views.InvestmentPaymentView.as_view(),
          name='fp-investment-payment'),
+    path('goals/',                          views.SavingsGoalListView.as_view(),      name='fp-goals'),
+    path('goals/<int:pk>/',                 views.SavingsGoalDetailView.as_view(),    name='fp-goal-detail'),
     path('reminders/',                      views.RemindersView.as_view(),            name='fp-reminders'),
     path('recap/',                          views.RecapView.as_view(),                name='fp-recap'),
     path('budgets/',                        views.BudgetListView.as_view(),           name='fp-budgets'),

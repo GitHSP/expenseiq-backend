@@ -380,3 +380,21 @@ class NetWorthSnapshot(models.Model):
 
     def __str__(self):
         return f"{self.user.email} {self.month:%Y-%m}"
+
+
+class SavingsGoal(models.Model):
+    """Money the user is putting aside for something (a trip, a deposit): a
+    target, an optional date, and what's saved so far."""
+    user        = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="savings_goals")
+    name        = models.CharField(max_length=60)
+    target      = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    saved       = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"),
+                                      validators=[MinValueValidator(Decimal("0.00"))])
+    target_date = models.DateField(null=True, blank=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["target_date", "created_at"]
+
+    def __str__(self):
+        return f"{self.user.email}: {self.name}"

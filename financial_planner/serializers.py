@@ -240,3 +240,44 @@ class InvestmentSerializer(serializers.ModelSerializer):
         if attrs.get("current_value") is not None and not get("current_value_date"):
             attrs["current_value_date"] = timezone.localdate()
         return attrs
+
+
+class SavingsGoalSerializer(serializers.ModelSerializer):
+    """A goal, with what's left and what to put aside each month to make the date."""
+    left          = serializers.SerializerMethodField()
+    percent       = serializers.SerializerMethodField()
+    monthly       = serializers.SerializerMethodField()
+    months_left   = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SavingsGoal
+        model  = SavingsGoal
+        fields = ["id", "name", "target", "saved", "target_date", "left", "percent", "monthly", "months_left", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def _left(self, obj):
+        return max(obj.target - obj.saved, Decimal("0.00"))
+
+    def get_left(self, obj):
+        return str(self._left(obj))
+
+    def get_percent(self, obj):
+        return round(float(min(obj.saved / obj.target, 1) * 100), 1) if obj.target else 0
+
+    def get_months_left(self, obj):
+        if not obj.target_date:
+            return None
+        today = timezone.localdate()
+        return max((obj.target_date.year - today.year) * 12 + obj.target_date.month - today.month, 0)
+
+    def get_monthly(self, obj):
+        months = self.get_months_left(obj)
+        if months is None or self._left(obj) <= 0:
+            return None
+        return str((self._left(obj) / max(months, 1)).quantize(Decimal("0.01")))
+
+    def validate_name(self, value):
+        value = " ".join(str(value).split())
+        if len(value) < 2:
+            raise serializers.ValidationError("Give the goal a name.")
+        return value
