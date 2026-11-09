@@ -28,7 +28,8 @@ def add_rule(user, match, rename_to="", category="", treat_as="", my_share="", *
         return {"ok": False, "message": "Give at least 3 characters of the merchant/description to match."}
     if treat_as not in ("", "transfer", "spending", "shared", "bill"):
         return {"ok": False, "message": "treat_as must be 'transfer', 'spending', 'shared', 'bill' or empty."}
-    valid = {c[0] for c in Expense.CATEGORIES} | {c[0] for c in Income.CATEGORIES}
+    from expenses.categories import usable
+    valid = set(usable(user)) | {c[0] for c in Income.CATEGORIES}
     if category and category not in valid:
         return {"ok": False, "message": f"'{category}' isn't a category. Use one of: {', '.join(sorted(valid))}."}
     if not (rename_to or category or treat_as):

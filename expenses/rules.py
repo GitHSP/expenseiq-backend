@@ -136,6 +136,14 @@ def apply_to_preview(user, preview, file_kinds=None):
     return preview
 
 
+def _categories(user, model):
+    """Categories an entry of this kind can have (expenses include the user's own)."""
+    if model is Expense:
+        from .categories import usable
+        return usable(user)
+    return [c[0] for c in model.CATEGORIES]
+
+
 def apply_rule(user, rule):
     """Apply one rule to everything already imported. Returns counts.
     'Own money' removes expenses/income that were saved from matching
@@ -187,7 +195,7 @@ def apply_rule(user, rule):
                     if rule.rename_to and entry.title != rule.rename_to:
                         entry.title = rule.rename_to
                         fields.append("title")
-                    if rule.category in [c[0] for c in type(entry).CATEGORIES] and entry.category != rule.category:
+                    if rule.category in _categories(user, type(entry)) and entry.category != rule.category:
                         entry.category = rule.category
                         fields.append("category")
                     if fields:
@@ -206,7 +214,7 @@ def apply_rule(user, rule):
                     if rule.rename_to and entry.title != rule.rename_to:
                         entry.title = rule.rename_to
                         fields.append("title")
-                    valid = [c[0] for c in model.CATEGORIES]
+                    valid = _categories(user, model)
                     if rule.category in valid and entry.category != rule.category:
                         entry.category = rule.category
                         fields.append("category")

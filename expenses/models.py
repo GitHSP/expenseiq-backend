@@ -35,7 +35,8 @@ class Expense(models.Model):
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='expenses')
     title      = models.CharField(max_length=255)
     amount     = models.DecimalField(max_digits=10, decimal_places=2)
-    category   = models.CharField(max_length=50, choices=CATEGORIES)
+    # One of CATEGORIES or a category the user added (UserCategory); checked by the serializer.
+    category   = models.CharField(max_length=50)
     date       = models.DateField()
     tags       = models.JSONField(default=list, blank=True)
     notes      = models.TextField(blank=True, default='')
@@ -225,3 +226,21 @@ class SpendingBudget(models.Model):
 
     def __str__(self):
         return f"{self.user.email}: {self.label} {self.monthly_limit}"
+
+
+class UserCategory(models.Model):
+    """A user's change to the expense categories: a category they added
+    (is_custom, with an icon and colour), or a built-in one they've hidden."""
+    user      = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='expense_categories')
+    name      = models.CharField(max_length=50)
+    icon      = models.CharField(max_length=30, blank=True, default='')
+    color     = models.CharField(max_length=7, blank=True, default='')
+    is_custom = models.BooleanField(default=False)
+    hidden    = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['user', 'name'], name='unique_category_per_user')]
+
+    def __str__(self):
+        return f"{self.user.email}: {self.name}"

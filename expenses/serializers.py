@@ -8,6 +8,13 @@ class ExpenseSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'amount', 'original_amount', 'original_currency', 'category', 'date', 'tags', 'notes', 'created_at']
         read_only_fields = ['id', 'created_at']
 
+    def validate_category(self, value):
+        from .categories import is_valid
+        request = self.context.get("request")
+        if request is None or not is_valid(request.user, value):
+            raise serializers.ValidationError(f"'{value}' isn't one of your categories.")
+        return value
+
     def validate(self, attrs):
         return clean_original(attrs, self.instance)
 

@@ -380,7 +380,8 @@ class TransactionDetailView(APIView):
                 tx.income = None
             notes = f"Imported from {tx.statement.filename}"
             if kind == "expense":
-                valid = {c[0] for c in Expense.CATEGORIES}
+                from .categories import usable
+                valid = set(usable(request.user))
                 cat = category if category in valid else tx.category if tx.category in valid else \
                     _match(EXPENSE_RULES, tx.description, "Other")
                 if tx.expense_id:

@@ -76,6 +76,37 @@ MAX_STATEMENT_FILES = 50                     # e.g. 6 months × 7 accounts in on
 MAX_UPLOAD_TOTAL_BYTES = 60 * 1024 * 1024    # keeps the small server's memory/disk safe
 
 
+class CategoryView(APIView):
+    """GET  /api/categories/ - built-in and added expense categories, hidden or not, with counts.
+    POST /api/categories/ {name, icon, color} - add one (or bring a hidden built-in back).
+    POST /api/categories/ {action: "remove", name, move_to} - move its expenses, then hide/delete it.
+    POST /api/categories/ {action: "show", name} - show a hidden built-in again."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .categories import listing
+        return Response({"categories": listing(request.user)})
+
+    def post(self, request):
+        from . import categories as cats
+        action = request.data.get("action") or "add"
+        try:
+            if action == "add":
+                name = cats.add(request.user, request.data.get("name"), request.data.get("icon"), request.data.get("color"))
+                message = f"Added {name}."
+            elif action == "remove":
+                moved = cats.remove(request.user, str(request.data.get("name") or ""), str(request.data.get("move_to") or ""))
+                message = f"Removed. {moved} expense{'' if moved == 1 else 's'} moved to {request.data.get('move_to')}."
+            elif action == "show":
+                cats.show(request.user, str(request.data.get("name") or ""))
+                message = "Shown again."
+            else:
+                return Response({"error": "Unknown action."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": message, "categories": cats.listing(request.user)})
+
+
 class StatementPreviewView(APIView):
     """
     POST /api/statements/preview/  (multipart: one or more "files")
@@ -202,7 +233,7 @@ class StatementImportView(APIView):
 
         serializers_to_save, errors = [], []
         for i, (row, source) in enumerate(entries):
-            serializer, error = _entry_serializer(row, source)
+            serializer, error = _entry_serializer(row, source, request)
             serializers_to_save.append(serializer)
             if error:
                 errors.append({"row": i, "errors": error})
@@ -448,7 +479,7 @@ def _summary_fields(summary):
     return out
 
 
-def _entry_serializer(row, source):
+def _entry_serializer(row, source, request):
     """(serializer, errors) for one expense/income row to import."""
     if not isinstance(row, dict) or row.get("kind") not in ("expense", "income"):
         return None, {"kind": ["Must be 'expense' or 'income'."]}
@@ -461,7 +492,7 @@ def _entry_serializer(row, source):
     }
     if row["kind"] == "expense":
         data["tags"] = ["imported"]
-        serializer = ExpenseSerializer(data=data)
+        serializer = ExpenseSerializer(data=data, context={"request": request})
     else:
         serializer = IncomeSerializer(data=data)
     return serializer, (None if serializer.is_valid() else serializer.errors)

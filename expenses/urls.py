@@ -5,6 +5,7 @@ urlpatterns = [
     path('expenses/',          views.ExpenseListCreateView.as_view(),  name='expense-list'),
     path('expenses/<int:pk>/', views.ExpenseDetailView.as_view(),      name='expense-detail'),
     path('income/',            views.IncomeListCreateView.as_view(),   name='income-list'),
+    path('categories/',        views.CategoryView.as_view(),           name='categories'),
     path('income/<int:pk>/',   views.IncomeDetailView.as_view(),       name='income-detail'),
     path('expenses/bulk-delete/', views.BulkDeleteView.as_view(kind="expense"), name='expense-bulk-delete'),
     path('income/bulk-delete/',   views.BulkDeleteView.as_view(kind="income"),  name='income-bulk-delete'),

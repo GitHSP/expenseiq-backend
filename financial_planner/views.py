@@ -397,9 +397,9 @@ class BudgetListView(APIView):
 
     def post(self, request):
         from assistant.personal import set_budget
-        from expenses.models import Expense
+        from expenses.categories import usable
         category = str(request.data.get("category") or "")
-        if category not in {c[0] for c in Expense.CATEGORIES}:
+        if category not in usable(request.user):
             return Response({"error": "Pick a category."}, status=status.HTTP_400_BAD_REQUEST)
         out = set_budget(request.user, label=category, category=category, monthly_limit=request.data.get("monthly_limit"))
         if not out["ok"]:
