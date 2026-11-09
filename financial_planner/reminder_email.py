@@ -99,9 +99,13 @@ def html(r, app_url, name=""):
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{BG};padding:24px 12px">
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:{CARD};border-radius:14px;overflow:hidden">
-<tr><td style="background:#0a0a0a;padding:20px 28px">
-  <span style="display:inline-block;width:28px;height:28px;border-radius:8px;background:{GOLD};vertical-align:middle"></span>
-  <span style="font:800 18px Arial,sans-serif;color:#ffffff;vertical-align:middle;margin-left:10px">Glacier</span>
+<tr><td style="background:#0a0a0a;padding:18px 28px">
+  <img src="{escape(app_url.rstrip('/'))}/logo192.png" width="32" height="32" alt="Glacier"
+       style="display:inline-block;width:32px;height:32px;border:0;border-radius:8px;vertical-align:middle">
+  <span style="display:inline-block;vertical-align:middle;margin-left:10px;line-height:1.15">
+    <span style="display:block;font:800 19px Arial,sans-serif;color:#ffffff">Glacier</span>
+    <span style="display:block;font:600 11px Arial,sans-serif;color:#9ca3af;letter-spacing:.4px">Money manager</span>
+  </span>
 </td></tr>
 <tr><td style="padding:26px 28px 0;font:400 15px/1.5 Arial,sans-serif;color:{TEXT}">{hello}<br>here's what's coming up.</td></tr>
 {''.join(parts)}

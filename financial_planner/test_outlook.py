@@ -185,3 +185,20 @@ class OutlookTests(TestCase):
         hit = out["scenarios"]["pace"]["utilization"]["overall"]
         self.assertEqual(hit["50"]["amount"], 2450)                 # 5000 down to 2550
         self.assertEqual(hit["30"]["amount"], 3470)                 # 5000 down to 1530
+
+    def test_what_if_more_a_month_and_a_lump_sum(self):
+        base = build_outlook(self.user, today=date(2026, 1, 15))
+        self.assertIsNone(base["whatif"])
+        more = build_outlook(self.user, today=date(2026, 1, 15), whatif_extra=300.0)
+        w, planner = more["whatif"], more["scenarios"]["planner"]
+        self.assertEqual((w["base"], w["budget"]), ("planner", planner["budget"] + 300))
+        self.assertLess(w["months"], planner["months"])
+        self.assertLess(w["interest"], planner["interest"])
+        lump = build_outlook(self.user, today=date(2026, 1, 15), whatif_lump=5000.0)["whatif"]
+        self.assertNotIn(str(Debt.objects.get(name="Card").id), lump["debts"])   # the 20% card is paid off first
+        self.assertLess(lump["months"], planner["months"])
+        entered = build_outlook(self.user, today=date(2026, 1, 15), budget=1000.0, whatif_extra=100.0)["whatif"]
+        self.assertEqual((entered["base"], entered["budget"]), ("pace", 1100.0))
+        client = APIClient()
+        client.force_authenticate(self.user)
+        self.assertIsNone(client.get("/api/fp/outlook/?whatif_extra=abc&whatif_lump=-5").data["whatif"])

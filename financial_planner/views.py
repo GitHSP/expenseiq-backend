@@ -455,7 +455,15 @@ class OutlookView(APIView):
             budget = None
         chosen = request.query_params.get("debts", "")
         debt_ids = {int(x) for x in chosen.split(",") if x.strip().isdigit()} or None
-        return Response(build_outlook(request.user, target_months=target, budget=budget, debt_ids=debt_ids))
+
+        def amount(key):
+            try:
+                v = float(request.query_params.get(key) or 0)
+            except ValueError:
+                return 0.0
+            return v if 0 <= v < 10 ** 8 else 0.0           # also drops nan and inf
+        return Response(build_outlook(request.user, target_months=target, budget=budget, debt_ids=debt_ids,
+                                      whatif_extra=amount("whatif_extra"), whatif_lump=amount("whatif_lump")))
 
 
 class NetWorthView(APIView):

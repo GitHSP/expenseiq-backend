@@ -13,6 +13,8 @@ rules, month by month; they're estimates, not financial advice.
              savings) in place of what statements show was spent.
   pace     - the same, with the amount the user enters (or the pay figure).
   goal     - the lowest fixed amount that finishes by the target date.
+  whatif   - the Planner's amount (or the user's own) plus an extra amount a
+             month, after an optional one-time payment to the highest rates.
 
 The user can pick which debts to look at (only the cards, say). The other debts
 keep being paid, so their payments come out of the money first.
@@ -301,7 +303,18 @@ def _actions(user, debts, avg, pace_budget, pace, more, today):
     return actions[:5]
 
 
-def build_outlook(user, target_months=36, budget=None, today=None, debt_ids=None):
+def with_lump(debts, lump):
+    """The debts after a one-time payment, highest rate first."""
+    out = [dict(d) for d in debts]
+    left = float(lump or 0)
+    for d in sorted(out, key=lambda d: -d["rate"]):
+        pay = min(d["balance"], left)
+        d["balance"] -= pay
+        left -= pay
+    return [d for d in out if d["balance"] > 0.005]
+
+
+def build_outlook(user, target_months=36, budget=None, today=None, debt_ids=None, whatif_extra=0.0, whatif_lump=0.0):
     today = today or timezone.localdate()
     all_debts = _debts(user)
     debts = [d for d in all_debts if debt_ids is None or d["id"] in debt_ids] or all_debts
@@ -341,6 +354,15 @@ def build_outlook(user, target_months=36, budget=None, today=None, debt_ids=None
     chosen_minimums = sum(d["pays"] for d in debts)
     latest_pay = "planner" if planned_pay else "statements"
 
+    # What if: the plan the user is looking at, with more a month and/or a lump sum.
+    whatif = None
+    if whatif_extra or whatif_lump:
+        base_key, base_budget = ("pace", pace_budget) if budget is not None else ("planner", planner_budget)
+        lumped = with_lump(debts, whatif_lump)
+        run = simulate(lumped, budget=base_budget + whatif_extra, track=True)
+        whatif = {"base": base_key, "extra": round(whatif_extra, 2), "lump": round(whatif_lump, 2),
+                  **_scenario(run, lumped, today, round(base_budget + whatif_extra, 2))}
+
     return {
         "as_of": today.isoformat(),
         "has_debts": bool(debts),
@@ -369,6 +391,7 @@ def build_outlook(user, target_months=36, budget=None, today=None, debt_ids=None
                       "planner": _scenario(on_planner, debts, today, round(planner_budget, 2)),
                       "pace": _scenario(pace, debts, today, round(pace_budget, 2)),
                       "goal": _scenario(goal, debts, today, goal_budget)},
+        "whatif": whatif,
         "goal": {"target_months": target_months, "target_date": add_months(today, target_months).isoformat(),
                  "budget": goal_budget, "income_needed": round(income_needed, 2),
                  "income_gap": round(income_needed - pay, 2),
