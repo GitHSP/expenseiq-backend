@@ -590,3 +590,46 @@ class RoommateBalanceTests(TestCase):
         client = APIClient()
         client.force_authenticate(other)
         self.assertEqual(client.patch(f"/api/statements/transactions/{row.id}/", {"for_bills": False}, format="json").status_code, 404)
+
+
+class AvailableBalanceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="ab@example.test", username="ab", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.chq = Account.objects.create(user=self.user, name="Bank Chequing", kind="chequing")
+        Account.objects.create(user=self.user, name="Old Bank", kind="chequing", closed=True,
+                               current_balance=Decimal("999"))
+        Account.objects.create(user=self.user, name="Visa", kind="credit_card", current_balance=Decimal("50"))
+
+    def patch(self, data):
+        return self.client.patch(f"/api/statements/accounts/{self.chq.id}/", data, format="json")
+
+    def test_balance_plus_overdraft(self):
+        empty = self.client.get("/api/statements/accounts/available/").data
+        self.assertIsNone(empty["total_available"])                     # nothing typed in yet
+        r = self.patch({"current_balance": "-120.50", "overdraft_limit": 500})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["available"], "379.50")                 # overdrawn, still $379.50 to spend
+        self.assertIsNotNone(r.data["balance_updated_at"])
+        data = self.client.get("/api/statements/accounts/available/").data
+        self.assertEqual([a["name"] for a in data["accounts"]], ["Bank Chequing"])   # not closed accounts or cards
+        self.assertEqual((data["total_balance"], data["total_overdraft"], data["total_available"]),
+                         ("-120.50", "500.00", "379.50"))
+        listed = self.client.get("/api/statements/accounts/").data["accounts"]
+        self.assertEqual(next(a for a in listed if a["id"] == self.chq.id)["available"], "379.50")
+
+    def test_validation_and_clearing(self):
+        self.assertEqual(self.patch({"overdraft_limit": -5}).status_code, 400)
+        self.assertEqual(self.patch({"current_balance": "lots"}).status_code, 400)
+        self.patch({"current_balance": 200})
+        r = self.patch({"current_balance": None})
+        self.assertIsNone(r.data["current_balance"])
+        self.assertIsNone(r.data["balance_updated_at"])
+
+    def test_only_own_accounts(self):
+        other = get_user_model().objects.create_user(email="ab2@example.test", username="ab2", password="x-Test-12345")
+        c = APIClient()
+        c.force_authenticate(other)
+        self.assertEqual(c.patch(f"/api/statements/accounts/{self.chq.id}/", {"current_balance": 1}, format="json").status_code, 404)
+        self.assertEqual(c.get("/api/statements/accounts/available/").data["accounts"], [])

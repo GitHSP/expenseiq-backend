@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import Count, Max, Min, Q, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -69,7 +70,7 @@ class AccountListView(APIView):
         return Response({
             "accounts": [{
                 "id": a.id, "name": a.name, "kind": a.kind, "institution": a.institution, "last4": a.last4,
-                "closed": a.closed,
+                "closed": a.closed, **_balance(a),
                 "transaction_count": tx_stats.get(a.id, {}).get("count", 0),
                 "first_date": tx_stats[a.id]["first"].isoformat() if a.id in tx_stats else None,
                 "last_date": tx_stats[a.id]["last"].isoformat() if a.id in tx_stats else None,
@@ -81,6 +82,48 @@ class AccountListView(APIView):
                 "coverage": cov["accounts"].get(a.id, {}),
             } for a in accounts],
             "months": cov["months"],
+        })
+
+
+def _balance(a):
+    """The typed-in balance, the overdraft, and what that leaves to spend."""
+    avail = a.available()
+    return {
+        "current_balance": _money(a.current_balance) if a.current_balance is not None else None,
+        "balance_updated_at": a.balance_updated_at.isoformat() if a.balance_updated_at else None,
+        "overdraft_limit": _money(a.overdraft_limit),
+        "available": _money(avail) if avail is not None else None,
+    }
+
+
+def _amount(value, field, allow_negative):
+    """A number from the request, or raises ValueError with a message for the user."""
+    try:
+        v = Decimal(str(value)).quantize(Decimal("0.01"))
+    except Exception:
+        raise ValueError(f"{field} must be a number.")
+    if not v.is_finite() or abs(v) >= Decimal("10000000000"):
+        raise ValueError(f"{field} must be a number.")
+    if v < 0 and not allow_negative:
+        raise ValueError(f"{field} can't be negative.")
+    return v
+
+
+class AvailableView(APIView):
+    """GET /api/statements/accounts/available/ — bank accounts with a typed-in
+    balance: each one's balance, overdraft and available, plus the total."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        rows = [{"id": a.id, "name": a.name, "kind": a.kind, **_balance(a)}
+                for a in Account.objects.filter(user=request.user, closed=False, kind__in=("chequing", "savings"))]
+        counted = [r for r in rows if r["available"] is not None]
+        total = sum((Decimal(r["available"]) for r in counted), Decimal("0"))
+        return Response({
+            "accounts": rows,
+            "total_available": _money(total) if counted else None,
+            "total_balance": _money(sum((Decimal(r["current_balance"]) for r in counted), Decimal("0"))) if counted else None,
+            "total_overdraft": _money(sum((Decimal(r["overdraft_limit"]) for r in counted), Decimal("0"))) if counted else None,
         })
 
 
@@ -213,6 +256,16 @@ class AccountDetailView(APIView):
             if not isinstance(request.data["closed"], bool):
                 return Response({"error": "closed must be true or false."}, status=status.HTTP_400_BAD_REQUEST)
             account.closed = request.data["closed"]
+        try:
+            if "current_balance" in request.data:
+                raw = request.data["current_balance"]
+                account.current_balance = None if raw in (None, "") else _amount(raw, "Balance", allow_negative=True)
+                account.balance_updated_at = timezone.now() if account.current_balance is not None else None
+            if "overdraft_limit" in request.data:
+                raw = request.data["overdraft_limit"]
+                account.overdraft_limit = Decimal("0") if raw in (None, "") else _amount(raw, "Overdraft", allow_negative=False)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         relink = "debt" in request.data
         if relink:
             from financial_planner.models import Debt
@@ -226,7 +279,7 @@ class AccountDetailView(APIView):
         account.save()
         synced = sync_debt(account, force=True) if relink and account.debt else None
         return Response({"id": account.id, "name": account.name, "kind": account.kind, "closed": account.closed,
-                         "debt": account.debt_id, "debt_updated": synced})
+                         "debt": account.debt_id, "debt_updated": synced, **_balance(account)})
 
     def delete(self, request, pk):
         account = self._get(request, pk)

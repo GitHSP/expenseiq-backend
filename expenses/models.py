@@ -109,7 +109,18 @@ class Account(models.Model):
     # No longer used (salary moved elsewhere): no upload reminders, and its last
     # balance isn't counted as money the user has now. Its history stays.
     closed      = models.BooleanField(default=False)
+    # What the bank app shows now, typed in by the user (statements are weeks old),
+    # and the overdraft the bank allows: available = balance + overdraft.
+    current_balance    = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    balance_updated_at = models.DateTimeField(null=True, blank=True)
+    overdraft_limit    = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at  = models.DateTimeField(auto_now_add=True)
+
+    def available(self):
+        """Balance plus overdraft, or None until a balance is typed in."""
+        if self.current_balance is None:
+            return None
+        return self.current_balance + (self.overdraft_limit or 0)
 
     class Meta:
         ordering = ['kind', 'name']
