@@ -104,7 +104,7 @@ class ChatView(APIView):
         if isinstance(raw_messages, list) and raw_messages and isinstance(raw_messages[-1], dict)                 and raw_messages[-1].get("role") == "user" and isinstance(raw_messages[-1].get("content"), str):
             quick = answer(request.user, raw_messages[-1]["content"])
             if quick:
-                return Response({"reply": quick["reply"], "actions": [], "quick": True})
+                return Response({"reply": quick["reply"], "actions": quick.get("actions", []), "quick": True})
         if not settings.ANTHROPIC_API_KEY:
             return Response({"reply": OFFLINE_NOTE + help_text(request.user, "", None), "actions": [], "quick": True})
 

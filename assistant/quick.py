@@ -49,6 +49,171 @@ def _partial(user, ym, today):
     return " (only part of that month's statements are uploaded so far)" if not full or ym > full else ""
 
 
+# ── logging from chat: "spent $20 on gas", "paid $300 on RBC 7K", "undo" ──
+# Plain patterns only; anything unclear is left for the AI (or gets a hint).
+
+AMT = r"\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?\s?(?:dollars|bucks|cad)?"
+WHEN = r"(?:\s+(today|yesterday|this morning|last night|tonight))?"
+CHAT_NOTE = "Added in Aurora chat"
+FILLER = re.compile(r"^(?:a|an|the|some|my)\s+", re.I)
+
+# A first guess at the category when the user hasn't logged this name before.
+GUESS = [
+    (r"coffee|tim ?hortons|tims|starbucks|lunch|dinner|breakfast|food|restaurant|pizza|burger|uber ?eats|doordash|skip|snack|meal|takeout", "Food & Dining"),
+    (r"grocer|walmart|costco|no ?frills|sobeys|loblaws|freshco|food basics|superstore|metro", "Household"),
+    (r"\bgas\b|fuel|petro|esso|shell|uber|lyft|taxi|bus|presto|transit|train|parking|car wash", "Transport"),
+    (r"smoke|cigarette|vape|tobacco|juul", "Smoke & Vape"),
+    (r"beer|wine|liquor|lcbo|\bbar\b|drinks?|pub", "Drinks & Bars"),
+    (r"movie|cinema|netflix|game|concert|tickets?", "Entertainment"),
+    (r"gym|fitness|yoga", "Gym & Fitness"),
+    (r"pharmacy|medicine|doctor|dentist|shoppers", "Medical & Health"),
+    (r"haircut|salon|barber|laundry", "Personal Care & Beauty"),
+    (r"clothes|shoes|shirt|amazon|shopping|dollarama", "Clothing & Shopping"),
+    (r"gift|donation", "Gifts & Donations"),
+    (r"phone|internet|hydro|bill", "Bills & Utilities"),
+    (r"\brent\b", "Housing"),
+    (r"book|course|tuition", "Education & Books"),
+]
+QUESTION = re.compile(r"\b(how|what|when|which|why|where|is|are|was|did|do|does|can|should)\b")
+
+
+def _amount(whole, cents):
+    return Decimal(whole.replace(",", "") + (cents or ""))
+
+
+def _day(word, today):
+    return today - timedelta(days=1) if word in ("yesterday", "last night") else today
+
+
+def _title(text):
+    t = FILLER.sub("", text.strip(" .!,")).strip()
+    return t[:1].upper() + t[1:] if t else ""
+
+
+def _debts_matching(user, name):
+    """Active debts whose name has every word typed ("rbc 7k" -> "RBC Visa 7K")."""
+    from financial_planner.models import Debt
+    words = [w for w in re.split(r"\W+", name.lower()) if w and w not in ("my", "the", "card", "credit")]
+    if not words:
+        return []
+    return [d for d in Debt.objects.filter(user=user, is_active=True)
+            if all(w in d.name.lower() for w in words)]
+
+
+def _category(user, title):
+    """What the user used last time for this name; otherwise a guess from the words."""
+    from expenses.models import Expense
+    last = Expense.objects.filter(user=user, title__iexact=title).order_by("-date", "-id").first()
+    if last:
+        return last.category
+    low = title.lower()
+    return next((cat for pattern, cat in GUESS if re.search(pattern, low)), "Other")
+
+
+def _add_expense(user, title, amount, day, today):
+    from activity.context import activity_context
+    from expenses.models import Expense
+    if not title or amount <= 0:
+        return None
+    cat = _category(user, title)
+    with activity_context(source="assistant"):
+        Expense.objects.create(user=user, title=title[:255], amount=amount, category=cat, date=day, notes=CHAT_NOTE)
+    when = "today" if day == today else f"on {day:%b} {day.day}"
+    msg = f"Added {title}: {money(amount)} ({cat}) {when}."
+    return {"reply": msg + ' Wrong? Say "undo", or change it on the Expenses page.', "intent": "log_expense",
+            "actions": [{"tool": "add_expense", "input": {"title": title, "amount": str(amount)}, "message": msg}]}
+
+
+def _pay_debt(user, debt, amount, today):
+    from activity.context import activity_context
+    from financial_planner.models import ChecklistItem
+    from financial_planner.services import recalculate_avalanche_order, sync_current_month, toggle_checklist_item
+    before = debt.current_balance
+    # This month's checklist line for the card: tick it with what was paid, as the app does.
+    item = ChecklistItem.objects.filter(monthly_plan__user=user, monthly_plan__year=today.year,
+                                        monthly_plan__month=today.month, linked_debt=debt,
+                                        category="debt_min", is_completed=False).first()
+    ticked = bool(item and item.amount)
+    with activity_context(source="assistant"):
+        if ticked:
+            toggle_checklist_item(item, paid=amount)
+        else:
+            debt.current_balance = max(D0, debt.current_balance - amount)
+            if debt.current_balance == D0:
+                debt.is_active = False
+                debt.paid_off_date = today
+            debt.save()
+        recalculate_avalanche_order(user)
+        sync_current_month(user)
+    debt.refresh_from_db()
+    msg = f"Recorded {money(amount)} paid on {debt.name}. Balance {money(before)} → {money(debt.current_balance)}."
+    if debt.current_balance == D0:
+        msg += " Paid off. Well done!"
+    elif ticked:
+        msg += " This month's checklist is ticked too."
+    return {"reply": msg + " To change it, edit the balance in Planner → Debts.", "intent": "log_payment",
+            "actions": [{"tool": "update_debt", "input": {"name": debt.name}, "message": msg}]}
+
+
+def log_entry(user, text, today):
+    """A reply when `text` is something to record, else None."""
+    t = " ".join(str(text).strip().rstrip(".!").split())
+    low = t.lower()
+
+    if re.fullmatch(r"(undo|remove|delete)( that| it| the last one)?", low):
+        from activity.context import activity_context
+        from expenses.models import Expense
+        last = Expense.objects.filter(user=user, notes=CHAT_NOTE,
+                                      created_at__gte=timezone.now() - timedelta(hours=1)).order_by("-created_at").first()
+        if not last:
+            return {"reply": "There's nothing added in this chat in the last hour to undo. "
+                             "Card payments are changed in Planner → Debts.", "intent": "undo"}
+        with activity_context(source="assistant"):
+            last.delete()
+        msg = f"Removed {last.title} ({money(last.amount)})."
+        return {"reply": msg, "intent": "undo",
+                "actions": [{"tool": "delete_expense", "input": {"title": last.title}, "message": msg}]}
+
+    # "paid $300 on/to/towards RBC 7K": the card, when it names one; otherwise an expense.
+    m = re.fullmatch(rf"(?:i\s+)?(?:just\s+)?(?:paid|pay|payed|made a payment of)\s+{AMT}\s+(?:on|to|towards|toward|for|into|at)\s+(.+?){WHEN}", low)
+    if m:
+        amount, thing = _amount(m.group(1), m.group(2)), m.group(3)
+        debts = _debts_matching(user, thing)
+        if len(debts) == 1:
+            return _pay_debt(user, debts[0], amount, today)
+        if len(debts) > 1:
+            names = ", ".join(d.name for d in debts)
+            return {"reply": f'Which one: {names}? Say e.g. "paid {money(amount)} on {debts[0].name}".', "intent": "log_payment"}
+        return _add_expense(user, _title(t[m.start(3):m.end(3)]), amount, _day(m.group(4), today), today)
+
+    # "spent $20 on gas", "spent 12 at Tim Hortons yesterday"
+    m = re.fullmatch(rf"(?:i\s+)?(?:just\s+)?(?:spent|spend)\s+{AMT}\s+(?:on|for|at)\s+(.+?){WHEN}", low)
+    if m:
+        return _add_expense(user, _title(t[m.start(3):m.end(3)]), _amount(m.group(1), m.group(2)), _day(m.group(4), today), today)
+
+    # "bought lunch for $15", "had coffee for 4.50 today"
+    m = re.fullmatch(rf"(?:i\s+)?(?:just\s+)?(?:bought|had|got|grabbed|paid for)\s+(.+?)\s+for\s+{AMT}{WHEN}", low)
+    if m:
+        return _add_expense(user, _title(t[m.start(1):m.end(1)]), _amount(m.group(2), m.group(3)), _day(m.group(4), today), today)
+
+    # "$20 on gas", "15 for laundry"
+    m = re.fullmatch(rf"{AMT}\s+(?:on|for|at)\s+(.+?){WHEN}", low)
+    if m and not QUESTION.search(low):
+        return _add_expense(user, _title(t[m.start(3):m.end(3)]), _amount(m.group(1), m.group(2)), _day(m.group(4), today), today)
+
+    # "coffee 4.50", "smoke $19.28 yesterday": one to three words, then the amount
+    m = re.fullmatch(rf"([a-z][a-z0-9'&\- ]{{0,40}}?)\s+{AMT}{WHEN}", low)
+    if m and len(m.group(1).split()) <= 3 and not QUESTION.search(m.group(1)):
+        amount = _amount(m.group(2), m.group(3))
+        debts = _debts_matching(user, m.group(1))
+        if debts:
+            name = debts[0].name if len(debts) == 1 else m.group(1).upper()
+            return {"reply": f'Did you pay {money(amount)} on {name}? Say "paid {money(amount)} on {name}" and I\'ll record it.',
+                    "intent": "log_payment"}
+        return _add_expense(user, _title(t[m.start(1):m.end(1)]), amount, _day(m.group(4), today), today)
+    return None
+
+
 # ── the answers ──
 
 def debt_free(user, q, today):
@@ -211,7 +376,9 @@ def credit_score(user, q, today):
 
 
 def help_text(user, q, today):
-    return "I can answer these straight away:\n" + "\n".join(f"• {s}" for s in SUGGESTIONS)
+    return ("I can answer these straight away:\n" + "\n".join(f"• {s}" for s in SUGGESTIONS)
+            + '\n\nAnd log things for you: "spent $20 on gas", "coffee 4.50", "paid $300 on RBC". '
+              'Say "undo" to take back the last expense.')
 
 
 # First match wins, so the more specific questions come first.
@@ -236,6 +403,9 @@ def answer(user, question, today=None):
     if not q or len(q) > 140:            # long questions need real reasoning
         return None
     today = today or timezone.localdate()
+    logged = log_entry(user, question, today)
+    if logged:
+        return logged
     for pattern, fn in INTENTS:
         if re.search(pattern, q):
             return {"reply": fn(user, q, today), "intent": fn.__name__}
