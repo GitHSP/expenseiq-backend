@@ -177,3 +177,30 @@ class WeeklySummaryTests(TestCase):
         self.assertEqual(len(weekly), 1)
         self.assertEqual(weekly[0].subject, "Glacier: Your week: CA$40.00 spent, CA$30.00 more than usual")
         self.assertIn("Food &amp; Dining", weekly[0].alternatives[0][0])
+
+
+class AllClearTests(TestCase):
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_quiet_day_gets_all_clear_with_next_payment(self):
+        from unittest import mock
+        user = get_user_model().objects.create_user(email="q@example.test", username="q", password="x-Test-12345")
+        RecurringItem.objects.create(user=user, label="Rent", amount=Decimal("900"), due_day=1, category="fixed_expense")
+        with mock.patch("financial_planner.reminders.timezone.localdate", return_value=date(2026, 3, 10)), \
+             mock.patch("financial_planner.management.commands.send_reminders.timezone.localdate", return_value=date(2026, 3, 10)):
+            call_command("send_reminders", stdout=StringIO())                 # a Tuesday, nothing due for 3 days
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.subject, "Glacier: All clear: nothing due in the next few days")
+        self.assertIn("Next up: Rent", msg.body)
+        self.assertIn("all clear", msg.alternatives[0][0])
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_no_all_clear_when_the_weekly_summary_went(self):
+        from unittest import mock
+        user = get_user_model().objects.create_user(email="s@example.test", username="s", password="x-Test-12345")
+        Expense.objects.create(user=user, title="Lunch", amount=Decimal("40"), category="Food & Dining", date=date(2026, 3, 12))
+        with mock.patch("financial_planner.weekly.timezone.localdate", return_value=date(2026, 3, 15)), \
+             mock.patch("financial_planner.reminders.timezone.localdate", return_value=date(2026, 3, 15)), \
+             mock.patch("financial_planner.management.commands.send_reminders.timezone.localdate", return_value=date(2026, 3, 15)):
+            call_command("send_reminders", stdout=StringIO())
+        self.assertEqual([m.subject.startswith("Glacier: Your week") for m in mail.outbox], [True])

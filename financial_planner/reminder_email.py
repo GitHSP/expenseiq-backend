@@ -202,3 +202,23 @@ def weekly_html(w, app_url, name=""):
                      f'On your Planner you\'re <strong>debt-free by {when_free:%B %Y}</strong>, with {money(w["total_debt"])} owed now.</td></tr>')
     return page(parts, app_url, name, "here's your week.")
 
+
+
+# ── Quiet days: a short "all clear", so a missing email means something's wrong ──
+
+def all_clear_subject(nxt):
+    return "All clear: nothing due in the next few days"
+
+
+def all_clear_text(nxt, app_url):
+    line = (f"Next up: {nxt['label']}, {money(nxt['amount'])} {when(nxt)}." if nxt
+            else "Nothing is due in the next month.")
+    return f"All clear. Nothing is due in the next few days.\n{line}\n\nOpen Glacier: {app_url}\n"
+
+
+def all_clear_html(nxt, app_url, name=""):
+    parts = []
+    if nxt:
+        parts.append(_section("Next up", _row(nxt["label"], when(nxt) + (" · automatic" if nxt["auto"] else ""),
+                                               money(nxt["amount"]))))
+    return page(parts, app_url, name, "all clear. Nothing is due in the next few days.")
