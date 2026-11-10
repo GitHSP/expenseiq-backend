@@ -148,7 +148,7 @@ class ChatView(APIView):
             for _ in range(MAX_TOOL_ROUNDS):
                 response = client.messages.create(
                     model=settings.ANTHROPIC_MODEL,
-                    max_tokens=2048,
+                    max_tokens=8000,            # room for thinking (on by default on newer models) plus the reply
                     system=system_prompt,
                     tools=TOOL_SCHEMAS,
                     messages=messages,
