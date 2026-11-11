@@ -67,10 +67,11 @@ class AccountListView(APIView):
                 "money_in": _money(s.money_in), "money_out": _money(-(s.money_out or 0)),
             })
         cov = coverage(accounts, statements)
+        since = _balances_for(request.user)
         return Response({
             "accounts": [{
                 "id": a.id, "name": a.name, "kind": a.kind, "institution": a.institution, "last4": a.last4,
-                "closed": a.closed, **_balance(a),
+                "closed": a.closed, **_balance(a, since.get(a.id)),
                 "transaction_count": tx_stats.get(a.id, {}).get("count", 0),
                 "first_date": tx_stats[a.id]["first"].isoformat() if a.id in tx_stats else None,
                 "last_date": tx_stats[a.id]["last"].isoformat() if a.id in tx_stats else None,
@@ -85,15 +86,61 @@ class AccountListView(APIView):
         })
 
 
-def _balance(a):
-    """The typed-in balance, the overdraft, and what that leaves to spend."""
-    avail = a.available()
+def _main_bank(user):
+    """The one bank account with a typed-in balance. Planner payments ticked after
+    that balance was typed are taken off it (and income added). With several bank
+    balances we can't tell which account paid, so nothing is estimated."""
+    accounts = list(Account.objects.filter(user=user, closed=False, kind__in=("chequing", "savings"),
+                                           current_balance__isnull=False, balance_updated_at__isnull=False)[:2])
+    return accounts[0] if len(accounts) == 1 else None
+
+
+def _since_update(account):
+    """Planner checklist items ticked since the balance was typed: paid out of the
+    bank (anything not paid by card, card payments included) or income received."""
+    from financial_planner.models import ChecklistItem
+    items = (ChecklistItem.objects
+             .filter(monthly_plan__user=account.user, is_completed=True, completed_at__gt=account.balance_updated_at)
+             .select_related("recurring_item").order_by("completed_at"))
+    paid = received = Decimal("0")
+    rows = []
+    for it in items:
+        if it.recurring_item_id and it.recurring_item.paid_by_card:
+            continue                                   # on a card: the bank balance doesn't move
+        amount = it.paid_amount if it.paid_amount is not None else it.amount
+        if not amount:
+            continue
+        income = it.category == "income"
+        if income:
+            received += amount
+        else:
+            paid += amount
+        rows.append({"label": it.label, "amount": _money(amount), "income": income,
+                     "date": it.completed_at.date().isoformat()})
+    return {"paid": _money(paid), "received": _money(received), "items": rows[-10:], "count": len(rows)}
+
+
+def _balance(a, since=None):
+    """The typed-in balance, the overdraft, and what that leaves to spend; with
+    `since`, the balance is estimated from Planner payments ticked after it was typed."""
+    estimate = None
+    if a.current_balance is not None and since and since["count"]:
+        estimate = a.current_balance + Decimal(since["received"]) - Decimal(since["paid"])
+    balance = estimate if estimate is not None else a.current_balance
     return {
         "current_balance": _money(a.current_balance) if a.current_balance is not None else None,
         "balance_updated_at": a.balance_updated_at.isoformat() if a.balance_updated_at else None,
         "overdraft_limit": _money(a.overdraft_limit),
-        "available": _money(avail) if avail is not None else None,
+        "estimated_balance": _money(estimate) if estimate is not None else None,
+        "since_update": since if estimate is not None else None,
+        "available": _money(balance + (a.overdraft_limit or 0)) if balance is not None else None,
     }
+
+
+def _balances_for(user):
+    """account id -> what was ticked since its balance, for the one main bank account."""
+    main = _main_bank(user)
+    return {main.id: _since_update(main)} if main else {}
 
 
 def _amount(value, field, allow_negative):
@@ -115,14 +162,16 @@ class AvailableView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        rows = [{"id": a.id, "name": a.name, "kind": a.kind, **_balance(a)}
+        since = _balances_for(request.user)
+        rows = [{"id": a.id, "name": a.name, "kind": a.kind, **_balance(a, since.get(a.id))}
                 for a in Account.objects.filter(user=request.user, closed=False, kind__in=("chequing", "savings"))]
         counted = [r for r in rows if r["available"] is not None]
         total = sum((Decimal(r["available"]) for r in counted), Decimal("0"))
         return Response({
             "accounts": rows,
             "total_available": _money(total) if counted else None,
-            "total_balance": _money(sum((Decimal(r["current_balance"]) for r in counted), Decimal("0"))) if counted else None,
+            "total_balance": _money(sum((Decimal(r["estimated_balance"] or r["current_balance"]) for r in counted), Decimal("0"))) if counted else None,
+            "estimated": any(r["estimated_balance"] is not None for r in counted),
             "total_overdraft": _money(sum((Decimal(r["overdraft_limit"]) for r in counted), Decimal("0"))) if counted else None,
         })
 
@@ -279,7 +328,8 @@ class AccountDetailView(APIView):
         account.save()
         synced = sync_debt(account, force=True) if relink and account.debt else None
         return Response({"id": account.id, "name": account.name, "kind": account.kind, "closed": account.closed,
-                         "debt": account.debt_id, "debt_updated": synced, **_balance(account)})
+                         "debt": account.debt_id, "debt_updated": synced,
+                         **_balance(account, _balances_for(request.user).get(account.id))})
 
     def delete(self, request, pk):
         account = self._get(request, pk)

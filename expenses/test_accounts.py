@@ -633,3 +633,55 @@ class AvailableBalanceTests(TestCase):
         c.force_authenticate(other)
         self.assertEqual(c.patch(f"/api/statements/accounts/{self.chq.id}/", {"current_balance": 1}, format="json").status_code, 404)
         self.assertEqual(c.get("/api/statements/accounts/available/").data["accounts"], [])
+
+
+class BalanceSincePlannerTests(TestCase):
+    """The typed-in bank balance minus Planner payments ticked since (card ones skipped)."""
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from financial_planner.models import ChecklistItem, MonthlyPlan, RecurringItem
+        self.user = get_user_model().objects.create_user(email="bs@example.test", username="bs", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.chq = Account.objects.create(user=self.user, name="Chequing", kind="chequing", overdraft_limit=Decimal("500"))
+        self.client.patch(f"/api/statements/accounts/{self.chq.id}/", {"current_balance": "1000"}, format="json")
+        plan = MonthlyPlan.objects.create(user=self.user, year=2026, month=11)
+        by_card = RecurringItem.objects.create(user=self.user, label="Streaming", amount=Decimal("20"), paid_by_card=True)
+        later, earlier = timezone.now() + timedelta(minutes=5), timezone.now() - timedelta(days=1)
+        def item(label, amount, category="fixed_expense", when=later, **kw):
+            ChecklistItem.objects.create(monthly_plan=plan, label=label, amount=Decimal(amount), category=category,
+                                         is_completed=True, completed_at=when, **kw)
+        item("Insurance", "107")
+        item("Card payment", "300", category="debt_min", paid_amount=Decimal("250"))   # what was actually paid
+        item("Pay", "1500", category="income")
+        item("Streaming", "20", recurring_item=by_card)                               # on a card: skipped
+        item("Rent", "900", when=earlier)                                            # before the balance: skipped
+        ChecklistItem.objects.create(monthly_plan=plan, label="Phone", amount=Decimal("60"), category="fixed_expense")
+
+    def test_estimate(self):
+        d = self.client.get("/api/statements/accounts/available/").data
+        a = d["accounts"][0]
+        self.assertEqual(a["current_balance"], "1000.00")
+        self.assertEqual(a["estimated_balance"], "2143.00")                  # 1000 - 107 - 250 + 1500
+        self.assertEqual(a["available"], "2643.00")                          # + 500 overdraft
+        self.assertEqual((a["since_update"]["paid"], a["since_update"]["received"]), ("357.00", "1500.00"))
+        self.assertEqual([i["label"] for i in a["since_update"]["items"]], ["Insurance", "Card payment", "Pay"])
+        self.assertTrue(d["estimated"])
+        self.assertEqual(d["total_balance"], "2143.00")
+
+    def test_new_balance_resets_and_two_banks_dont_guess(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        self.client.patch(f"/api/statements/accounts/{self.chq.id}/", {"current_balance": "800"}, format="json")
+        # typed after everything was ticked
+        Account.objects.filter(pk=self.chq.pk).update(balance_updated_at=timezone.now() + timedelta(minutes=10))
+        a = self.client.get("/api/statements/accounts/available/").data["accounts"][0]
+        self.assertIsNone(a["estimated_balance"])
+        self.assertEqual(a["available"], "1300.00")
+        Account.objects.filter(pk=self.chq.pk).update(balance_updated_at=timezone.now() - timedelta(days=2))
+        other = Account.objects.create(user=self.user, name="Savings", kind="savings")
+        self.client.patch(f"/api/statements/accounts/{other.id}/", {"current_balance": "50"}, format="json")
+        d = self.client.get("/api/statements/accounts/available/").data
+        self.assertFalse(d["estimated"])
+        self.assertEqual(d["total_available"], "1350.00")
