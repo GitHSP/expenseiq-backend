@@ -7,6 +7,7 @@ from .models import (
     Investment, InvestmentPayment,
 )
 from .investments import summarize
+from .policy_plan import PlanError, build_plan, validate_plan
 
 
 class DebtSerializer(serializers.ModelSerializer):
@@ -185,7 +186,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'id', 'kind', 'name', 'provider', 'currency', 'start_date', 'recurring_item',
             'payment', 'payment_frequency', 'rate',
             'policy_type', 'paying_years', 'term_years', 'sum_assured',
-            'current_value', 'current_value_date', 'maturity_value', 'yearly_cost', 'surrender_charge',
+            'current_value', 'current_value_date', 'maturity_value', 'yearly_cost', 'surrender_charge', 'plan',
             'months', 'chit_value', 'prized', 'prized_date', 'prize_amount',
             'deposit_where', 'deposit_amount', 'deposit_rate', 'deposit_start',
             'compounding', 'interest_payout', 'is_active', 'notes', 'payments', 'summary',
@@ -194,7 +195,48 @@ class InvestmentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_summary(self, obj):
-        return summarize(obj)
+        s = summarize(obj)
+        if obj.kind == "insurance" and obj.plan:
+            s["plan"] = build_plan(obj)
+        return s
+
+    def validate_plan(self, value):
+        import json
+        if len(json.dumps(value)) > 200_000:
+            raise serializers.ValidationError("That's too much data for one policy.")
+        try:
+            return validate_plan(value)
+        except PlanError as e:
+            raise serializers.ValidationError(str(e))
+
+    def _apply_plan(self, validated):
+        # The plan's newest statement value and surrender charge become the policy's
+        # cash value, so the summary and net worth use them too.
+        plan = validated.get("plan")
+        if not plan or not plan.get("values"):
+            return
+        from datetime import date as _d
+        from decimal import Decimal as _D
+        from .investments import months_between
+        from .policy_plan import surrender_charge
+        last = plan["values"][-1]
+        validated["current_value"] = _D(str(round(last["fund"], 2)))
+        validated["current_value_date"] = _d.fromisoformat(last["date"])
+        start = validated.get("start_date") or (self.instance.start_date if self.instance else None)
+        if start:
+            py = months_between(start, _d.fromisoformat(last["date"])) // 12 + 1
+            validated["surrender_charge"] = _D(str(round(surrender_charge(plan, py), 2)))
+        latest = plan["years"][-1] if plan.get("years") else None
+        if latest and latest.get("charges") is not None:
+            validated["yearly_cost"] = _D(str(round(latest["charges"] + (latest.get("tax") or 0), 2)))
+
+    def create(self, validated):
+        self._apply_plan(validated)
+        return super().create(validated)
+
+    def update(self, instance, validated):
+        self._apply_plan(validated)
+        return super().update(instance, validated)
 
     def validate_currency(self, value):
         value = (value or "").upper()

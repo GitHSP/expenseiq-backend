@@ -322,6 +322,9 @@ class Investment(models.Model):
     # insurance + policy fee + premium tax), and the charge for cancelling now.
     yearly_cost      = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     surrender_charge = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    # A universal life policy's own figures (cost of insurance table, surrender
+    # charges, statement values, illustration), pasted by the user: policy_plan.py.
+    plan = models.JSONField(default=dict, blank=True)
 
     # Chit (`months` is also an RD's tenure)
     months       = models.PositiveSmallIntegerField(null=True, blank=True)
