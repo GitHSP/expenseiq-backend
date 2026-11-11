@@ -58,6 +58,13 @@ class PolicyPlanTests(TestCase):
         # year 2: rate 1.15 per $1,000 a year on (100,000 - fund), plus $5 a month
         self.assertAlmostEqual(cost / 12, 5 + 1.15 * (100000 - 1000) / 12000, delta=1)
 
+    def test_cover_plus_fund_costs_more_than_level(self):
+        level = build_plan(policy(dict(PLAN, rates=[6])), today=date(2022, 3, 15))["projections"][0]
+        plus = build_plan(policy(dict(PLAN, rates=[6], death_benefit="plus_fund")), today=date(2022, 3, 15))["projections"][0]
+        self.assertLess(plus["at"]["55"], level["at"]["55"])        # insurance on the whole cover, every year
+        with self.assertRaises(PlanError):
+            validate_plan(dict(PLAN, death_benefit="double"))
+
     def test_validation(self):
         for bad in ({"face": 1}, dict(PLAN, coi={"unit": "weekly", "by": "age", "rates": []}),
                     dict(PLAN, face="lots"), dict(PLAN, values=[{"date": "soon", "fund": 1}])):

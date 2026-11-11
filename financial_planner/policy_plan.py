@@ -67,9 +67,15 @@ def validate_plan(data):
         "premium_tax": _num(data.get("premium_tax", 0), "premium_tax", 0, 0.5),
         "monthly_fee": _num(data.get("monthly_fee", 0), "monthly_fee", 0, 1e5),
         "bonus": _num(data.get("bonus", 0), "bonus", 0, 10),
+        # "level": the death benefit is the cover (or the fund, if more), so the insurer's
+        # risk is cover - fund. "plus_fund": the cover plus the fund is paid, so the
+        # insurer's risk is always the whole cover.
+        "death_benefit": data.get("death_benefit", "level"),
         "rates": [_num(r, "rates", -10, 30) for r in _list(data.get("rates", [4, 6, 8]), "rates", 5)] or [4, 6, 8],
         "note": str(data.get("note", ""))[:300],
     }
+    if out["death_benefit"] not in ("level", "plus_fund"):
+        raise PlanError("death_benefit must be level or plus_fund.")
     coi = data.get("coi")
     if not isinstance(coi, dict):
         raise PlanError("coi (the cost of insurance table) is missing.")
@@ -141,7 +147,8 @@ def project(plan, start, from_date, fund, paid, rate):
         if _paying(plan, age):
             fund += plan["premium"] * (1 - plan["premium_tax"])
             paid += plan["premium"]
-        cost = plan["monthly_fee"] + _coi_month(plan, policy_year, age, plan["face"] - fund) + _riders(plan, age)
+        at_risk = plan["face"] if plan.get("death_benefit") == "plus_fund" else plan["face"] - fund
+        cost = plan["monthly_fee"] + _coi_month(plan, policy_year, age, at_risk) + _riders(plan, age)
         fund -= cost
         cost_year += cost
         if fund < 0:
@@ -235,6 +242,7 @@ def build_plan(inv, today=None):
         "insurance_cost": cost_by_age,
         "riders": plan["riders"],
         "face": plan["face"],
+        "death_benefit": plan.get("death_benefit", "level"),
         "illustration": plan.get("illustration"),
         "note": plan["note"],
     }
