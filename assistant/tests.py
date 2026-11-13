@@ -324,3 +324,36 @@ class PlanPayoffToolTests(TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("matches 2 debts", r["message"])
         self.assertIn("Bank A Visa", r["message"])
+
+
+class DebtInOtherCurrencyTests(TestCase):
+    def setUp(self):
+        from financial_planner.models import Debt
+        self.user = get_user_model().objects.create_user(email="inr@example.test", username="inr", password="x-Test-12345")
+        # A loan kept in INR: 600,000 rupees = 9,600 CAD (0.016 CAD a rupee).
+        self.loan = Debt.objects.create(user=self.user, name="Education loan", debt_type="other",
+                                        current_balance=Decimal("9600"), annual_interest_rate=Decimal("10"),
+                                        minimum_payment=Decimal("320"), original_currency="INR",
+                                        original_current_balance=Decimal("600000"), original_minimum_payment=Decimal("20000"))
+        self.card = Debt.objects.create(user=self.user, name="Visa", current_balance=Decimal("1000"),
+                                        annual_interest_rate=Decimal("20"), minimum_payment=Decimal("30"))
+
+    def test_minimum_in_inr_uses_the_loans_own_rate(self):
+        from .tools import update_debt
+        r = update_debt(self.user, "education", minimum_payment=30000, currency="INR")
+        self.assertTrue(r["ok"], r)
+        self.loan.refresh_from_db()
+        self.assertEqual(self.loan.original_minimum_payment, Decimal("30000.00"))
+        self.assertEqual(self.loan.minimum_payment, Decimal("480.00"))             # 30,000 x 0.016
+        self.assertEqual(self.loan.original_current_balance, Decimal("600000.00"))  # untouched
+        self.assertIn("INR 30,000.00", r["message"])
+
+    def test_no_guessing_without_a_rate(self):
+        from .tools import update_debt
+        r = update_debt(self.user, "visa", minimum_payment=3000, currency="INR")
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["needs_rate"])
+        r = update_debt(self.user, "visa", minimum_payment=3000, currency="INR", cad_per_unit=0.016)
+        self.assertTrue(r["ok"], r)
+        self.card.refresh_from_db()
+        self.assertEqual((self.card.minimum_payment, self.card.original_currency), (Decimal("48.00"), "INR"))

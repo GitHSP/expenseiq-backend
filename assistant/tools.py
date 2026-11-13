@@ -396,10 +396,47 @@ def add_debt(user, name, debt_type=None, current_balance=0, annual_interest_rate
 
 def update_debt(user, name, current_balance=None, annual_interest_rate=None,
                  minimum_payment=None, credit_limit=None, due_day=None,
-                 is_active=None, notes=None, **kwargs):
+                 is_active=None, notes=None, currency=None, cad_per_unit=None, **kwargs):
     debt, error = _find_one(Debt.objects.filter(user=user), "name", name, "debt")
     if error:
         return {"ok": False, "message": error}
+
+    # Amounts in another currency (an education loan in INR): kept as typed, and
+    # converted to CAD with the debt's own rate (its stored INR and CAD balances),
+    # or the rate the user gives. Never a guessed rate.
+    cur = str(currency or "").upper().strip()
+    shown = ""
+    if cur and cur != "CAD":
+        if len(cur) != 3 or not cur.isalpha():
+            return {"ok": False, "message": f"'{currency}' isn't a currency code like INR."}
+        if cad_per_unit is not None:
+            try:
+                per = _to_decimal(cad_per_unit, "cad_per_unit")
+            except ValueError as e:
+                return {"ok": False, "message": str(e)}
+        elif (debt.original_currency == cur and debt.original_current_balance
+              and debt.current_balance):
+            per = Decimal(debt.current_balance) / Decimal(debt.original_current_balance)
+        else:
+            return {"ok": False, "needs_rate": True, "message": (
+                f"{debt.name} isn't kept in {cur} yet, so I need the rate: how many CAD is 1 {cur}? "
+                "(Your bank app or the currency box on the Dashboard shows it.)")}
+        if per <= 0:
+            return {"ok": False, "message": "The rate must be more than 0."}
+        try:
+            given = {f: _to_decimal(v, f) for f, v in (("current_balance", current_balance),
+                     ("minimum_payment", minimum_payment), ("credit_limit", credit_limit)) if v is not None}
+        except ValueError as e:
+            return {"ok": False, "message": str(e)}
+        if not given:
+            return {"ok": False, "message": f"Give the amount in {cur} to change."}
+        for f, v in given.items():
+            setattr(debt, f"original_{f}", v.quantize(Decimal("0.01")))
+            setattr(debt, f, (v * per).quantize(Decimal("0.01")))
+        debt.original_currency = cur
+        debt._originals_given = True
+        shown = "; ".join(f"{f.replace('_', ' ')} {cur} {v:,.2f} (≈ ${v * per:,.2f} CAD)" for f, v in given.items())
+        current_balance = minimum_payment = credit_limit = None     # done above
 
     try:
         if current_balance is not None:
@@ -429,7 +466,8 @@ def update_debt(user, name, current_balance=None, annual_interest_rate=None,
 
     return {
         "ok": True,
-        "message": f"Updated debt '{debt.name}' — balance now ${debt.current_balance}.",
+        "message": (f"Updated debt '{debt.name}': {shown}." if shown
+                    else f"Updated debt '{debt.name}' — balance now ${debt.current_balance}."),
         "debt": DebtSerializer(debt).data,
     }
 
@@ -1159,6 +1197,10 @@ TOOL_SCHEMAS = [
                 "due_day": {"type": "integer"},
                 "is_active": {"type": "boolean", "description": "Set false to mark it paid off/closed."},
                 "notes": {"type": "string"},
+                "currency": {"type": "string", "description": (
+                    "When the amounts given are in another currency, e.g. 'INR' for '30,000 rupees'. They're kept "
+                    "as given and converted to CAD with the debt's own rate; if it has none, the tool asks for one.")},
+                "cad_per_unit": {"type": "number", "description": "Only if the user gives a rate: CAD for 1 unit of currency."},
             },
             "required": ["name"],
         },
