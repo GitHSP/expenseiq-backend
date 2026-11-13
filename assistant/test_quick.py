@@ -37,12 +37,29 @@ class QuickAnswerTests(TestCase):
         self.assertEqual(self.ask("What's my net worth")["intent"], "net_worth")
         self.assertEqual(self.ask("how much can I still spend this month")["intent"], "left_to_spend")
 
+    def test_due_in_n_days(self):
+        r = self.ask("What are the payments due in next 10 days?")
+        self.assertTrue(r["reply"].startswith("Due in the next 10 days"), r["reply"])
+        self.assertIn("next 14 days", self.ask("whats due in the next 2 weeks")["reply"])
+
+    def test_planned_recurring_total(self):
+        RecurringItem.objects.create(user=self.user, label="Savings", amount=Decimal("120"), category="transfer",
+                                     frequency="biweekly")
+        r = self.ask("How much is my planned recurring payments and list all")
+        self.assertEqual(r["intent"], "recurring")
+        # 1,500 rent + 120 every 2 weeks (= 260 a month)
+        self.assertIn("$1,760.00 a month (2 items)", r["reply"])
+        self.assertIn("Plus $40.00 a month in debt minimums", r["reply"])
+        self.assertIn("Planned income: $3,000.00", r["reply"])
+        self.assertIn("leaves $1,200.00 a month", r["reply"])
+
     def test_other_questions_go_to_the_ai(self):
         self.assertIsNone(self.ask("Write me a poem about glaciers"))
         self.assertIsNone(self.ask("x " * 100))
 
     @override_settings(ANTHROPIC_API_KEY="")
-    def test_chat_answers_without_the_ai(self):
+    @mock.patch("assistant.quick.timezone.localdate", return_value=date(2026, 3, 10))   # the card is due on the 12th
+    def test_chat_answers_without_the_ai(self, _today):
         client = APIClient()
         client.force_authenticate(self.user)
         res = client.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": "what's due this week"}]}, format="json")
@@ -113,3 +130,40 @@ class ChatLoggingTests(TestCase):
         for q in ("how much did I spend on gas", "what's due this week", "When am I debt-free?", "is 20 on gas a lot"):
             self.assertNotEqual((self.ask(q) or {}).get("intent"), "log_expense", q)
         self.assertEqual(Expense.objects.count(), before)
+
+
+class LearnedQuestionTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="lq@example.test", username="lq", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def ask(self, text):
+        return self.client.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": text}]}, format="json")
+
+    @override_settings(ANTHROPIC_API_KEY="")
+    def test_questions_asked_twice_become_quick_questions(self):
+        self.ask("What are my planned recurring payments?")
+        self.assertEqual(self.client.get("/api/assistant/quick-questions/").data["yours"], [])   # once isn't enough
+        self.ask("what are my planned recurring payments")                    # same question, typed differently
+        self.ask("Tell me a story about money")                               # goes to the AI: counted, not instant
+        self.ask("tell me a story about money!")
+        self.ask("spent $20 on gas")                                          # a record, not a question
+        self.ask("spent $20 on gas")
+        d = self.client.get("/api/assistant/quick-questions/").data
+        self.assertEqual([(q["text"], q["count"], q["instant"]) for q in d["yours"]],
+                         [("tell me a story about money!", 2, False), ("what are my planned recurring payments", 2, True)]
+                         if d["yours"][0]["text"].startswith("tell") else
+                         [("what are my planned recurring payments", 2, True), ("tell me a story about money!", 2, False)])
+        self.assertIn("When am I debt-free?", d["common"])
+
+    @override_settings(ANTHROPIC_API_KEY="")
+    def test_hide_and_per_user(self):
+        for _ in range(2):
+            self.ask("How are my savings goals?")
+        r = self.client.delete("/api/assistant/quick-questions/", {"text": "how are my savings goals"}, format="json")
+        self.assertEqual(r.data["yours"], [])
+        other = get_user_model().objects.create_user(email="lq2@example.test", username="lq2", password="x-Test-12345")
+        c = APIClient()
+        c.force_authenticate(other)
+        self.assertEqual(c.get("/api/assistant/quick-questions/").data["yours"], [])

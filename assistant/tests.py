@@ -250,3 +250,38 @@ class GroundingCheckTests(SearchTransactionsToolTests):
         reply, calls = self.chat(["Coffee: $17.85 in total, $10.75 + $2.10 + $5.00 = $17.85."])
         self.assertEqual(calls, 2)
         self.assertNotIn("verify", reply)
+
+
+class CalculateToolTests(TestCase):
+    """Aurora adds and subtracts with the calculate tool, and its results pass the accuracy check."""
+
+    def test_calculate(self):
+        from .tools import calculate
+        self.assertEqual(calculate(None, "107 + 250.50 + 49.99")["result"], "407.49")
+        self.assertEqual(calculate(None, "$1,374.46 - 107")["result"], "1267.46")
+        self.assertEqual(calculate(None, "(85 * 12) / 2")["result"], "510.00")
+        for bad in ("__import__('os')", "2 ** 999", "1 / 0", "abs(-1)", ""):
+            self.assertFalse(calculate(None, bad)["ok"], bad)
+
+    def test_a_three_item_total_through_chat_has_no_warning(self):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        user = get_user_model().objects.create_user(email="calc@example.test", username="calc", password="x-Test-12345")
+        for amount in ("107.00", "250.50", "49.99"):
+            Expense.objects.create(user=user, title=f"E{amount}", amount=amount, category="Other", date=date(2026, 9, 1))
+        fetch = NS(type="tool_use", id="t1", name="list_expenses", input={"limit": 10})
+        add = NS(type="tool_use", id="t2", name="calculate", input={"expression": "107.00 + 250.50 + 49.99"})
+        answer = NS(stop_reason="end_turn", content=[NS(type="text", text="Together that's **$407.49**.")])
+        client = APIClient()
+        client.force_authenticate(user)
+        with mock.patch("assistant.views.anthropic.Anthropic") as A, \
+             mock.patch("assistant.views.settings.ANTHROPIC_API_KEY", "test-key"):
+            A.return_value.messages.create.side_effect = [NS(stop_reason="tool_use", content=[fetch]),
+                                                          NS(stop_reason="tool_use", content=[add]), answer]
+            res = client.post("/api/assistant/chat/", {"messages": [
+                {"role": "user", "content": "Walk me through what I paid out in September, with a total"}]}, format="json")
+            kwargs = A.return_value.messages.create.call_args_list[0].kwargs
+        self.assertEqual(res.data["reply"], "Together that's **$407.49**.")      # no "couldn't verify" note
+        self.assertEqual(A.return_value.messages.create.call_count, 3)           # no extra retry round
+        self.assertEqual(kwargs["tools"][-1]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(kwargs["system"][0]["cache_control"], {"type": "ephemeral"})

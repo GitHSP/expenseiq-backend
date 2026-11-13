@@ -20,6 +20,7 @@ SUGGESTIONS = [
     "How are my savings goals?",
     "What's my net worth?",
     "How much interest am I paying?",
+    "What are my planned recurring payments?",
 ]
 
 
@@ -234,7 +235,9 @@ def debt_free(user, q, today):
 
 def due(user, q, today):
     from financial_planner.reminders import build_reminders
-    days = 30 if "month" in q else 7
+    n = re.search(r"(?:next|coming)\s+(\d{1,2})\s+days?", q)
+    days = (min(int(n.group(1)), 60) if n else 14 if re.search(r"(two|2)\s+weeks|fortnight", q)
+            else 30 if "month" in q else 7)
     r = build_reminders(user, today=today, days=days)
     if not r["due"]:
         return f"Nothing is due in the next {days} days, going by your Recurring payments and debts."
@@ -305,6 +308,35 @@ def extra(user, q, today):
                 f"({top['rate']}%), your highest rate.")
     return ("Put the extra on " + ", then ".join(f"{n} ({money(v)})" for n, v in rows)
             + ". Highest rate first saves the most interest.")
+
+
+def recurring(user, q, today):
+    """Planned recurring payments and income, a month's worth (every 2 weeks = 26 a year)."""
+    from financial_planner.models import Debt, RecurringItem
+    per_month = {"monthly": Decimal(1), "varies": Decimal(1), "biweekly": Decimal(26) / 12, "weekly": Decimal(52) / 12}
+    items = list(RecurringItem.objects.filter(user=user, is_active=True))
+    if not items:
+        return "You haven't added any recurring payments yet. Add them in Planner → Recurring."
+
+    def line(i):
+        m = i.amount * per_month.get(i.frequency, Decimal(1))
+        when = (f"every 2 weeks, ≈ {money(m)}/month" if i.frequency == "biweekly"
+                else f"weekly, ≈ {money(m)}/month" if i.frequency == "weekly"
+                else f"day {i.due_day}" if i.due_day else "no due day")
+        return m, f"• {i.label}: {money(i.amount)} ({when})" + (" · by card" if i.paid_by_card else "")
+
+    out_rows = sorted((line(i) + (i.due_day or 99,) for i in items if i.category != "income"), key=lambda r: r[2])
+    in_rows = [line(i) for i in items if i.category == "income"]
+    spend = sum((r[0] for r in out_rows), D0)
+    income = sum((r[0] for r in in_rows), D0)
+    minimums = sum((d.minimum_payment or D0 for d in Debt.objects.filter(user=user, is_active=True)), D0)
+    text = f"Planned payments come to {money(spend)} a month ({len(out_rows)} items):\n" + "\n".join(r[1] for r in out_rows)
+    if minimums:
+        text += f"\n\nPlus {money(minimums)} a month in debt minimums."
+    if in_rows:
+        text += f"\n\nPlanned income: {money(income)} a month:\n" + "\n".join(r[1] for r in in_rows)
+        text += f"\n\nThat leaves {money(income - spend - minimums)} a month after payments and minimums."
+    return text + "\n\n(Every-2-weeks items are counted as 26 a year.)"
 
 
 def goals(user, q, today):
@@ -386,6 +418,7 @@ INTENTS = [
     (r"debt[- ]?free|pay(ing)? (it all |everything )?off|out of debt|when .*(done|free)", debt_free),
     (r"credit score|utili[sz]ation|30 ?%|statement date|report", credit_score),
     (r"which (card|debt)|(where|what).*(extra|put|pay first)|pay first|avalanche", extra),
+    (r"recurring|planned (payments?|bills?|expenses?|costs?)|(monthly|regular|fixed) (bills|payments|costs|expenses)", recurring),
     (r"\b(due|upcoming|coming up)\b|bills? (this|next)|pay (this|next) (week|month)", due),
     (r"\bgoals?\b|saving(s)? for|\bsaved\b", goals),
     (r"net ?worth|what am i worth|how much do i own", net_worth),

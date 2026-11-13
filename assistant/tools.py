@@ -648,7 +648,42 @@ def rollover_month(user, **kwargs):
     }
 
 
+def calculate(user, expression, **kwargs):
+    """Exact arithmetic for the assistant: + - * / and brackets on plain numbers.
+    Its result counts as a verified amount, so totals and differences are allowed."""
+    import ast
+    import operator
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
+    text = str(expression or "").replace(",", "").replace("$", "").strip()
+    if not text or len(text) > 400:
+        return {"ok": False, "message": "Give an expression like 107 + 250.50 - 30."}
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return Decimal(str(node.value))
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            left, right = ev(node.left), ev(node.right)
+            if isinstance(node.op, ast.Div) and right == 0:
+                raise ValueError("division by zero")
+            return ops[type(node.op)](left, right)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            v = ev(node.operand)
+            return -v if isinstance(node.op, ast.USub) else v
+        raise ValueError("only numbers, + - * / and brackets")
+
+    try:
+        value = ev(ast.parse(text, mode="eval"))
+    except (SyntaxError, ValueError, ArithmeticError) as e:
+        return {"ok": False, "message": f"Couldn't calculate that: {e}."}
+    if abs(value) > Decimal("1e12"):
+        return {"ok": False, "message": "That number is too large."}
+    return {"ok": True, "expression": text, "result": f"{value.quantize(Decimal('0.01')):.2f}"}
+
+
 TOOL_HANDLERS = {
+    "calculate": calculate,
     "monthly_review": monthly_review,
     "get_alerts": get_alerts,
     "plan_card_payments": plan_card_payments,
@@ -700,6 +735,19 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+    {
+        "name": "calculate",
+        "description": (
+            "Exact arithmetic. Use it for EVERY total, difference, average, percentage or other sum you put in "
+            "a reply (e.g. adding up several payments, balance minus spending, monthly x 12) instead of working "
+            "it out yourself. Put in the exact amounts from tool results. Its result can be stated in the reply."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"expression": {"type": "string", "description": "e.g. '107 + 250.50 + 49.99' or '(1374.46 - 107) / 2'"}},
+            "required": ["expression"],
+        },
+    },
 
     {
         "name": "monthly_review",

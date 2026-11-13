@@ -75,3 +75,21 @@ class Memory(models.Model):
 
     def __str__(self):
         return f"{self.user.email}: {self.text[:40]}"
+
+
+class AskedQuestion(models.Model):
+    """A short question the user has asked Aurora (not the answer), counted so
+    the ones they ask often can be offered as quick questions. `instant` means
+    quick answers handled it (no AI). Only the user's own typed question is kept."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="asked_questions")
+    key = models.CharField(max_length=200)          # lowercased, punctuation and spacing tidied
+    text = models.CharField(max_length=200)         # as the user last typed it
+    count = models.PositiveIntegerField(default=1)
+    instant = models.BooleanField(default=False)
+    hidden = models.BooleanField(default=False)     # removed from quick questions by the user
+    last_asked = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["user", "key"]
+        ordering = ["-count", "-last_asked"]

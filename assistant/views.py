@@ -24,6 +24,7 @@ from .serializers import EncryptionKeySerializer, SyncedMessageSerializer
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, MUTATING_TOOLS
 from .personal import memory_lines
 from .advisor import get_alerts
+from . import learned
 from activity.context import activity_context
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ Guidelines:
 - Call get_financial_summary when you need context to answer a question (e.g. "how much debt do I have left?", "am I on track?").
 - For any question about where money went, how much was spent on something, at a merchant, in a category or month, or which card/account paid for it, call search_transactions (use `theme` for things like coffee, groceries, gas, dining, delivery, subscriptions; `query` for a specific merchant). For card balances, payments to cards, due dates, statements on file and recurring charges, call get_accounts_overview. Answer from the tool results only; if nothing matches, say so and mention which statements are uploaded.
 - Merchant names: use them exactly as printed on the statement (e.g. "UPG*PAYMENTICO.COM"). Never say what company or service a code stands for unless the user told you or a rule renamed it — if asked, say you can't tell from the statement.
-- Accuracy: every amount, date, merchant and account you state must come from a tool result in THIS reply — copy it exactly, don't estimate, round or recall figures from earlier in the chat. If you need numbers you haven't fetched in this reply, call the tool again. Say which account or card each amount is from. If the user questions a figure, search again and show exactly what came back; if the results were cut short (transactions_shown < count), say so and narrow the search.
+- Accuracy: every amount, date, merchant and account you state must come from a tool result in THIS reply — copy it exactly, don't estimate, round or recall figures from earlier in the chat. If you need numbers you haven't fetched in this reply, call the tool again. For any total, difference, average or percentage, call calculate with the exact amounts and state its result; never do arithmetic in your head. Say which account or card each amount is from. If the user questions a figure, search again and show exactly what came back; if the results were cut short (transactions_shown < count), say so and narrow the search.
 - ACTUAL vs PLANNED: the user's real income, spending and bills come ONLY from their uploaded statements (search_transactions, monthly_review, plan_vs_actual, get_financial_summary's actual_from_statements). Amounts in Planner — recurring payments, checklist items, fixed expenses — are rough plans the user typed in; never present them as what was earned or spent. When asked about income or expenses, give the statement figures (say which months the statements cover); mention planned amounts only as a comparison, labelled "planned". For "did I pay my bills / planned vs actual" call plan_vs_actual.
 - Shared bills: if the user pays rent/utilities/WiFi in full and roommates or friends send their share by e-transfer, save an add_rule with treat_as 'shared' for each person (match the name as it appears on e-transfers - search_transactions with direction 'income' and query 'e-transfer' shows them). Their money is NOT income: it pays for their part of the bills, so it's taken off the user's spending, and plan_vs_actual shows the user's own share.
 - Monthly review ("how did my month go?"): call monthly_review and write a short, honest review - income vs spending and what was saved, the 2-3 biggest changes, interest/fees, any alerts, and 1-2 concrete suggestions. Don't pad it.
@@ -59,6 +60,10 @@ Guidelines:
 """
 
 MAX_TOOL_ROUNDS = 6
+
+# The tool list is the same on every request, so it's cached (a breakpoint on
+# the last tool): each later step in a reply reads it from the cache, faster and cheaper.
+CACHED_TOOLS = TOOL_SCHEMAS[:-1] + [{**TOOL_SCHEMAS[-1], "cache_control": {"type": "ephemeral"}}]
 
 # Money amounts in text ("$1,234.56", "14.30"), not percentages ("21.99%").
 MONEY_IN_TEXT = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?![\d%])(?!\s?%)")
@@ -102,7 +107,12 @@ class ChatView(APIView):
         raw_messages = request.data.get("messages")
         # Common questions are answered from the user's figures, with no AI call.
         if isinstance(raw_messages, list) and raw_messages and isinstance(raw_messages[-1], dict)                 and raw_messages[-1].get("role") == "user" and isinstance(raw_messages[-1].get("content"), str):
-            quick = answer(request.user, raw_messages[-1]["content"])
+            question = raw_messages[-1]["content"]
+            quick = answer(request.user, question)
+            try:                                   # learn the questions asked often (never blocks a reply)
+                learned.record(request.user, question, quick["intent"] if quick else None)
+            except Exception:
+                logger.exception("Couldn't record an asked question")
             if quick:
                 return Response({"reply": quick["reply"], "actions": quick.get("actions", []), "quick": True})
         if not settings.ANTHROPIC_API_KEY:
@@ -149,8 +159,9 @@ class ChatView(APIView):
                 response = client.messages.create(
                     model=settings.ANTHROPIC_MODEL,
                     max_tokens=8000,            # room for thinking (on by default on newer models) plus the reply
-                    system=system_prompt,
-                    tools=TOOL_SCHEMAS,
+                    # Cached with the tools: the same for every step of this reply.
+                    system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+                    tools=CACHED_TOOLS,
                     messages=messages,
                 )
 
@@ -168,7 +179,8 @@ class ChatView(APIView):
                         messages.append({"role": "user", "content": (
                             "[Automatic check, not from the user] These amounts in your reply don't appear in any "
                             "tool result from this reply: " + ", ".join(f"${b:,}" for b in bad) + ". Don't state "
-                            "figures from memory or earlier messages. Call the tools to get the real figures and "
+                            "figures from memory or earlier messages, and don't add or subtract in your head: use calculate for "
+                            "any total or difference. Call the tools to get the real figures and "
                             "rewrite your whole reply using only amounts they return.")})
                         continue
                     if bad:
@@ -309,6 +321,23 @@ class SyncMessagesView(APIView):
     def delete(self, request):
         SyncedMessage.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class QuickQuestionsView(APIView):
+    """GET /api/assistant/quick-questions/ - the user's own often-asked questions
+    and the common ones. DELETE {"text"} hides one of the user's."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .quick import SUGGESTIONS
+        return Response({"yours": learned.yours(request.user), "common": SUGGESTIONS})
+
+    def delete(self, request):
+        text = request.data.get("text") if isinstance(request.data, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return Response({"error": "text is required."}, status=status.HTTP_400_BAD_REQUEST)
+        learned.hide(request.user, text)
+        return Response({"yours": learned.yours(request.user)})
 
 
 class AlertsView(APIView):

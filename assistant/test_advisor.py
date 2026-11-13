@@ -94,7 +94,7 @@ class BudgetAndMemoryTests(Base):
              mock.patch("assistant.views.settings.ANTHROPIC_API_KEY", "k"):
             A.return_value.messages.create.return_value = answer
             client.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": "hi"}]}, format="json")
-            system = A.return_value.messages.create.call_args.kwargs["system"]
+            system = "".join(b["text"] for b in A.return_value.messages.create.call_args.kwargs["system"])
         self.assertIn("Payday is every second Friday", system)
         self.assertNotIn("Someone else's note", system)
         self.assertTrue(forget(self.user, "payday")["ok"])
