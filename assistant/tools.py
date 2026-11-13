@@ -68,6 +68,10 @@ def _find_one(queryset, field_name, query_value, kind_label):
     matches = list(queryset.filter(**{f"{field_name}__icontains": query_value}))
     if not matches:
         return None, f"No {kind_label} found matching '{query_value}'."
+    # "RD" matches "RD" and "Wealthsimple RD": the exact name wins.
+    exact = [m for m in matches if str(getattr(m, field_name)).strip().lower() == str(query_value).strip().lower()]
+    if len(exact) == 1:
+        return exact[0], None
     if len(matches) > 1:
         names = ", ".join(str(getattr(m, field_name)) for m in matches[:8])
         return None, (
@@ -810,12 +814,24 @@ def plan_payoff(user, debts=None, by=None, monthly=None, extra=None, **kwargs):
 
 # ── Investments (insurance, chits, RDs, FDs) and savings goals ──
 
+def _find_investment(queryset, name, label="investment"):
+    """By its name, or by the Planner payment linked to it ("RD-Abroad" -> the RD it pays)."""
+    inv, error = _find_one(queryset, "name", name, label)
+    if inv:
+        return inv, None
+    linked = list(queryset.filter(recurring_item__label__icontains=name))
+    exact = [i for i in linked if i.recurring_item.label.strip().lower() == str(name).strip().lower()]
+    if len(exact) == 1 or len(linked) == 1:
+        return (exact or linked)[0], None
+    return None, error
+
 def _investment_brief(inv):
     from financial_planner.investments import summarize
     s = summarize(inv)
     s.pop("expected", None)
     out = {"name": inv.name, "kind": inv.get_kind_display(), "provider": inv.provider, "currency": inv.currency,
            "started": inv.start_date.isoformat(), "payment": str(inv.payment), "frequency": inv.payment_frequency,
+           "paid_by_planner_payment": inv.recurring_item.label if inv.recurring_item_id else None,
            "active": inv.is_active, "summary": s}
     if inv.kind == "insurance" and inv.plan:
         from financial_planner.policy_plan import build_plan
@@ -840,7 +856,7 @@ def get_investments(user, name=None, **kwargs):
     from financial_planner.models import Investment
     qs = Investment.objects.filter(user=user).prefetch_related("payments")
     if name:
-        inv, error = _find_one(qs, "name", name, "investment")
+        inv, error = _find_investment(qs, name)
         if error:
             return {"ok": False, "message": error}
         return {"ok": True, "investments": [_investment_brief(inv)]}
@@ -854,7 +870,7 @@ def update_investment_value(user, name, value, date=None, **kwargs):
     from types import SimpleNamespace
     from financial_planner.models import Investment
     from financial_planner.serializers import InvestmentSerializer
-    inv, error = _find_one(Investment.objects.filter(user=user), "name", name, "investment")
+    inv, error = _find_investment(Investment.objects.filter(user=user), name)
     if error:
         return {"ok": False, "message": error}
     if inv.kind == "chit":
@@ -880,7 +896,7 @@ def update_investment_value(user, name, value, date=None, **kwargs):
 
 def add_chit_payment(user, name, amount, date=None, note="", **kwargs):
     from financial_planner.models import Investment, InvestmentPayment
-    inv, error = _find_one(Investment.objects.filter(user=user, kind="chit"), "name", name, "chit")
+    inv, error = _find_investment(Investment.objects.filter(user=user, kind="chit"), name, "chit")
     if error:
         return {"ok": False, "message": error}
     try:

@@ -414,3 +414,19 @@ class InvestmentAndGoalToolTests(TestCase):
         other = get_user_model().objects.create_user(email="ig2@example.test", username="ig2", password="x-Test-12345")
         self.assertEqual(get_investments(other)["count"], 0)
         self.assertFalse(update_investment_value(other, "life", 1)["ok"])
+
+
+class FindByNameTests(TestCase):
+    def test_exact_name_wins_and_linked_planner_payment_finds_the_investment(self):
+        from financial_planner.models import Investment, RecurringItem
+        from .tools import get_investments
+        user = get_user_model().objects.create_user(email="fn@example.test", username="fn", password="x-Test-12345")
+        pay = RecurringItem.objects.create(user=user, label="RD-Abroad", amount=Decimal("100"))
+        Investment.objects.create(user=user, kind="rd", name="RD", currency="INR", start_date=date(2025, 1, 1),
+                                  payment=7000, rate=7, months=60, recurring_item=pay)
+        Investment.objects.create(user=user, kind="rd", name="Wealthsimple RD", currency="CAD",
+                                  start_date=date(2025, 1, 1), payment=100, rate=3)
+        self.assertEqual(get_investments(user, "rd")["investments"][0]["name"], "RD")          # exact name wins
+        r = get_investments(user, "RD-Abroad")["investments"][0]                                # by its Planner payment
+        self.assertEqual((r["name"], r["paid_by_planner_payment"]), ("RD", "RD-Abroad"))
+        self.assertFalse(get_investments(user, "simple r")["ok"] is False)                     # partial still works
