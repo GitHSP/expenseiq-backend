@@ -966,8 +966,73 @@ def delete_goal(user, name, **kwargs):
     return {"ok": True, "message": f"Removed the goal '{label}'."}
 
 
+def get_debt_history(user, name=None, months=12, **kwargs):
+    """How a card or loan balance has moved: each statement (closing balance,
+    paid, spent, interest) for cards, and every Planner balance change (with the
+    reason: a payment ticked, monthly interest, a statement) for any debt."""
+    from datetime import timedelta
+    from activity.models import ActivityLog
+    from expenses.card_debts import card_history, payments_since
+    from expenses.models import Account
+    try:
+        months = min(max(int(months or 12), 1), 36)
+    except (TypeError, ValueError):
+        months = 12
+    qs = Debt.objects.filter(user=user)
+    if name:
+        debt, error = _find_one(qs, "name", name, "debt")
+        if error:
+            return {"ok": False, "message": error}
+        debts = [debt]
+    else:
+        debts = list(qs.filter(is_active=True))
+    since = date.today() - timedelta(days=31 * months)
+    out = []
+    for d in debts:
+        row = {"name": d.name, "planner_balance_now": str(d.current_balance), "active": d.is_active}
+        if d.original_currency:
+            row["in_" + d.original_currency] = str(d.original_current_balance)
+        # Statements, for cards linked to an account.
+        statements = []
+        for acc in Account.objects.filter(user=user, debt=d):
+            hist = [h for h in card_history(acc) if h["period_end"] >= since.isoformat()]
+            statements += [{"account": acc.name, "period_end": h["period_end"], "closing_balance": h["new_balance"],
+                            "paid": h["paid"], "spent": h["spent"], "interest": h["interest"]} for h in hist]
+            if hist and hist[-1]["new_balance"] is not None:
+                paid_after = payments_since(acc, date.fromisoformat(hist[-1]["period_end"]))
+                row.setdefault("paid_since_last_statement", [])
+                row["paid_since_last_statement"] += [
+                    {"date": t.date.isoformat(), "amount": str(-t.amount), "from": t.account.name} for t in paid_after[:10]]
+        statements.sort(key=lambda h: h["period_end"])
+        if statements:
+            row["statements"] = statements
+            first, last = statements[0]["closing_balance"], statements[-1]["closing_balance"]
+            if first is not None and last is not None:
+                row["statement_change"] = {"from": statements[0]["period_end"], "to": statements[-1]["period_end"],
+                                           "change": str(Decimal(last) - Decimal(first))}
+        # Every change to the Planner balance, with why.
+        changes = []
+        for log in ActivityLog.objects.filter(user=user, area="debt", object_id=d.id,
+                                              created_at__date__gte=since).order_by("created_at")[:200]:
+            for c in log.changes or []:
+                if c.get("field") == "current_balance" and c.get("before") is not None:
+                    changes.append({"date": log.created_at.date().isoformat(), "before": c["before"],
+                                    "after": c["after"], "why": log.reason or log.action, "by": log.get_source_display()})
+        if changes:
+            row["planner_changes"] = changes[-25:]
+            row["planner_change"] = str(Decimal(changes[-1]["after"]) - Decimal(changes[0]["before"]))
+            row["planner_change_from"] = changes[0]["date"]
+        if not statements and not changes:
+            row["note"] = "No statements or recorded balance changes in this period."
+        out.append(row)
+    return {"ok": True, "months": months, "debts": out,
+            "note": "Negative change = the balance went down. Card statements are the bank's figures; "
+                    "Planner changes are the user's own balance (payments ticked, monthly interest, statements)."}
+
+
 TOOL_HANDLERS = {
     "calculate": calculate,
+    "get_debt_history": get_debt_history,
     "get_investments": get_investments, "update_investment_value": update_investment_value,
     "add_chit_payment": add_chit_payment,
     "list_goals": list_goals, "add_goal": add_goal, "add_to_goal": add_to_goal, "delete_goal": delete_goal,
@@ -1024,6 +1089,18 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+    {
+        "name": "get_debt_history",
+        "description": (
+            "How card and loan balances have moved over time: each card statement (closing balance, paid, spent, "
+            "interest) and payments made since the last statement, plus every change to the Planner balance with "
+            "the reason (payment ticked, monthly interest, statement). Use for 'has my RBC gone down?', 'how much "
+            "interest did CIBC charge this year?', 'how has my education loan changed?'. Give name for one debt."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Debt name or part of it; leave out for all active debts."},
+            "months": {"type": "integer", "description": "How far back, default 12."}}},
+    },
     {
         "name": "get_investments",
         "description": (

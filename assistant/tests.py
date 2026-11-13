@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -430,3 +430,34 @@ class FindByNameTests(TestCase):
         r = get_investments(user, "RD-Abroad")["investments"][0]                                # by its Planner payment
         self.assertEqual((r["name"], r["paid_by_planner_payment"]), ("RD", "RD-Abroad"))
         self.assertFalse(get_investments(user, "simple r")["ok"] is False)                     # partial still works
+
+
+class DebtHistoryToolTests(TestCase):
+    def test_statements_and_planner_changes(self):
+        from activity.models import ActivityLog
+        from expenses.models import Account, Statement
+        from financial_planner.models import Debt
+        from .tools import get_debt_history
+        user = get_user_model().objects.create_user(email="dh@example.test", username="dh", password="x-Test-12345")
+        card = Debt.objects.create(user=user, name="Visa", current_balance=Decimal("900"),
+                                   annual_interest_rate=Decimal("20"), minimum_payment=Decimal("30"))
+        loan = Debt.objects.create(user=user, name="Student loan", debt_type="other", current_balance=Decimal("5000"),
+                                   annual_interest_rate=Decimal("8"), minimum_payment=Decimal("100"))
+        acc = Account.objects.create(user=user, name="Visa card", kind="credit_card", debt=card)
+        today = date.today()
+        for k, bal in ((2, "1200"), (1, "1000")):
+            end = date(today.year, today.month, 1) - timedelta(days=30 * k)
+            Statement.objects.create(user=user, account=acc, filename=f"s{k}.pdf", period_start=end - timedelta(days=29),
+                                     period_end=end, new_balance=Decimal(bal))
+        ActivityLog.objects.create(user=user, area="debt", action="updated", title="Student loan", object_id=loan.id,
+                                   reason='Ticked "Loan payment"', source="app",
+                                   changes=[{"field": "current_balance", "label": "Balance", "before": "5200.00", "after": "5000.00", "money": True}])
+
+        r = get_debt_history(user)
+        visa = next(d for d in r["debts"] if d["name"] == "Visa")
+        self.assertEqual([s["closing_balance"] for s in visa["statements"]], ["1200.00", "1000.00"])
+        self.assertEqual(visa["statement_change"]["change"], "-200.00")
+        student = get_debt_history(user, "student")["debts"][0]
+        self.assertEqual(student["planner_change"], "-200.00")
+        self.assertEqual(student["planner_changes"][0]["why"], 'Ticked "Loan payment"')
+        self.assertFalse(get_debt_history(user, "nothing like this")["ok"])
