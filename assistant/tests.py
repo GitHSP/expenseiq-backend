@@ -285,3 +285,42 @@ class CalculateToolTests(TestCase):
         self.assertEqual(A.return_value.messages.create.call_count, 3)           # no extra retry round
         self.assertEqual(kwargs["tools"][-1]["cache_control"], {"type": "ephemeral"})
         self.assertEqual(kwargs["system"][0]["cache_control"], {"type": "ephemeral"})
+
+
+class PlanPayoffToolTests(TestCase):
+    """Clearing chosen debts from their Planner balances: by a month, or with an amount."""
+
+    def setUp(self):
+        from financial_planner.models import Debt
+        self.user = get_user_model().objects.create_user(email="pp@example.test", username="ppo", password="x-Test-12345")
+        for name, bal, rate, mn in (("Bank A Visa", "2600", "21.99", "64"), ("Bank B Visa 2K", "1380.77", "21.99", "44"),
+                                    ("Bank B Mastercard", "5000", "19.99", "131")):
+            Debt.objects.create(user=self.user, name=name, debt_type="credit_card", current_balance=Decimal(bal),
+                                annual_interest_rate=Decimal(rate), minimum_payment=Decimal(mn))
+
+    def test_by_a_month_and_with_extra(self):
+        from unittest import mock
+        from .tools import plan_payoff
+        with mock.patch("django.utils.timezone.localdate", return_value=date(2026, 11, 13)):
+            r = plan_payoff(self.user, debts=["bank a", "b 2k"], by="2027-01", extra=500)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["balances_from"], "Planner")
+        self.assertEqual([d["name"] for d in r["debts"]], ["Bank A Visa", "Bank B Visa 2K"])
+        self.assertEqual(r["total_balance"], "3980.77")
+        self.assertEqual(r["other_debts_minimums"], "131.00")
+        goal = r["to_clear_by"]
+        self.assertEqual(goal["payments"], 3)                      # Nov, Dec, Jan
+        self.assertEqual(goal["cleared_by"], "January 2027")
+        self.assertGreater(float(goal["monthly"]), 3980.77 / 3)     # interest on top
+        self.assertLess(float(goal["monthly"]), 3980.77 / 3 + 60)
+        extra = r["with_amount"]
+        self.assertEqual(extra["monthly"], "608.00")               # 64 + 44 + 500
+        self.assertEqual(extra["months"], 8)
+        self.assertEqual(extra["cleared_by"], "June 2027")
+
+    def test_unclear_names(self):
+        from .tools import plan_payoff
+        r = plan_payoff(self.user, debts=["bank b"])
+        self.assertFalse(r["ok"])
+        self.assertIn("matches 2 debts", r["message"])
+        self.assertIn("Bank A Visa", r["message"])

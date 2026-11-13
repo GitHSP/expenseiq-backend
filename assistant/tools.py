@@ -682,8 +682,97 @@ def calculate(user, expression, **kwargs):
     return {"ok": True, "expression": text, "result": f"{value.quantize(Decimal('0.01')):.2f}"}
 
 
+def plan_payoff(user, debts=None, by=None, monthly=None, extra=None, **kwargs):
+    """Paying off chosen debts from their Planner balances (the same engine as
+    Analytics > Your plan): what a month clears them by a date, or how long a
+    given amount takes. Avalanche order, interest included, minimums kept."""
+    from math import ceil
+    from django.utils import timezone
+    from financial_planner.investments import add_months
+    from financial_planner.outlook import _debts, budget_for, simulate
+
+    today = timezone.localdate()
+    every = _debts(user)
+    if not every:
+        return {"ok": False, "message": "There are no debts with a balance in Planner."}
+    chosen = every
+    if debts:
+        if isinstance(debts, str):
+            debts = [debts]
+        import re
+
+        def tokens(text):          # "RBC Visa #2K" -> rbc, visa, 2k; "rbc2k" -> rbc, 2k
+            return re.findall(r"[a-z]+|\d+[a-z]*", str(text).lower())
+
+        chosen, problems = [], []
+        for name in debts:
+            words = [w for w in tokens(name) if w not in ("card", "the", "my", "and")]
+            hits = [d for d in every if words and all(any(t == w if len(w) <= 2 else t.startswith(w) for t in tokens(d["name"])) for w in words)]
+            if len(hits) == 1:
+                if hits[0] not in chosen:
+                    chosen.append(hits[0])
+            else:
+                problems.append(f"'{name}' matches {len(hits)} debts" if hits else f"no debt matches '{name}'")
+        if problems:
+            return {"ok": False, "message": "; ".join(problems) + ". Debts in Planner: " +
+                    ", ".join(d["name"] for d in every) + "."}
+    others = [d for d in every if d not in chosen]
+    minimums = sum(d["pays"] for d in chosen)
+
+    def money(v):
+        return f"{v:.2f}"
+
+    def describe(sim, budget):
+        months = sim["months"]
+        names = {d["id"]: d["name"] for d in chosen}
+        return {
+            "monthly": money(budget),
+            "cleared_by": add_months(today, months - 1).strftime("%B %Y") if months else None,
+            "months": months,
+            "interest": money(sim["interest"]),
+            "this_month": [{"debt": names[i], "pay": money(v)} for i, v in sim.get("first_pay", {}).items() if i in names],
+            "each_cleared": [{"debt": names[i], "month": add_months(today, m - 1).strftime("%B %Y")}
+                             for i, m in sorted(sim["finish"].items(), key=lambda kv: kv[1]) if i in names],
+        }
+
+    out = {
+        "ok": True,
+        "balances_from": "Planner",
+        "debts": [{"name": d["name"], "balance": money(d["balance"]), "rate_pct": round(d["rate"] * 100, 2),
+                   "minimum": money(d["pays"])} for d in chosen],
+        "total_balance": money(sum(d["balance"] for d in chosen)),
+        "minimums_of_these": money(minimums),
+        "other_debts_minimums": money(sum(d["pays"] for d in others)),
+        "other_debts": [d["name"] for d in others],
+        "today": today.isoformat(),
+    }
+    if by:
+        try:
+            y, m = (int(x) for x in str(by)[:7].split("-"))
+            months = (y - today.year) * 12 + m - today.month + 1      # counting this month's payment
+        except (ValueError, TypeError):
+            return {"ok": False, "message": "by must be a month like 2027-01."}
+        if months < 1:
+            return {"ok": False, "message": "That month has already passed."}
+        need = max(budget_for(chosen, months), ceil(minimums))
+        out["to_clear_by"] = {"month": f"{y}-{m:02d}", "payments": months,
+                              **describe(simulate(chosen, budget=need, max_months=months, track=True), need),
+                              "extra_over_minimums": money(need - minimums)}
+    if monthly is not None or extra is not None:
+        try:
+            budget = float(monthly) if monthly is not None else minimums + float(extra)
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "monthly and extra must be numbers."}
+        if budget < minimums:
+            out["with_amount"] = {"monthly": money(budget), "message": f"That's below these debts' minimums ({money(minimums)})."}
+        else:
+            out["with_amount"] = describe(simulate(chosen, budget=budget, track=True), budget)
+    return out
+
+
 TOOL_HANDLERS = {
     "calculate": calculate,
+    "plan_payoff": plan_payoff,
     "monthly_review": monthly_review,
     "get_alerts": get_alerts,
     "plan_card_payments": plan_card_payments,
@@ -735,6 +824,26 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+    {
+        "name": "plan_payoff",
+        "description": (
+            "Plan paying off chosen debts using the user's Planner balances (their own current figures), "
+            "interest included, highest rate first. Use it for 'clear X and Y by January', 'how long to pay off "
+            "my cards with $500 extra', 'how much a month to be debt-free by June'. by: what a month clears "
+            "them by that month. monthly or extra: how long that amount takes. Gives the monthly amount, the "
+            "month each debt is cleared, interest, this month's split, and the other debts' minimums still due."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "debts": {"type": "array", "items": {"type": "string"},
+                          "description": "Debt names (or part of them) as in Planner, e.g. ['CIBC', 'RBC 2K']. Leave out for all debts."},
+                "by": {"type": "string", "description": "Target month, YYYY-MM, e.g. '2027-01'."},
+                "monthly": {"type": "number", "description": "Total a month for these debts."},
+                "extra": {"type": "number", "description": "Amount a month on top of these debts' minimums."},
+            },
+        },
+    },
     {
         "name": "calculate",
         "description": (
