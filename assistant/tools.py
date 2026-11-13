@@ -808,8 +808,153 @@ def plan_payoff(user, debts=None, by=None, monthly=None, extra=None, **kwargs):
     return out
 
 
+# ── Investments (insurance, chits, RDs, FDs) and savings goals ──
+
+def _investment_brief(inv):
+    from financial_planner.investments import summarize
+    s = summarize(inv)
+    s.pop("expected", None)
+    out = {"name": inv.name, "kind": inv.get_kind_display(), "provider": inv.provider, "currency": inv.currency,
+           "started": inv.start_date.isoformat(), "payment": str(inv.payment), "frequency": inv.payment_frequency,
+           "active": inv.is_active, "summary": s}
+    if inv.kind == "insurance" and inv.plan:
+        from financial_planner.policy_plan import build_plan
+        p = build_plan(inv)
+        if p:
+            out["policy"] = {
+                "cover": p["face"], "death_benefit": "cover plus fund" if p["death_benefit"] == "plus_fund" else "cover (level)",
+                "riders": p["riders"], "age_now": p["age_now"], "policy_year": p["policy_year"],
+                "paid_so_far": p["today"]["paid"], "fund": p["today"]["fund"], "fund_date": p["today"]["fund_date"],
+                "if_cancelled_now": p["today"]["surrender_value"], "surrender_charge_now": p["today"]["surrender_charge"],
+                "surrender_charges_end": p["today"]["surrender_free_from"],
+                "pay_until_age": p["pay_until_age"], "total_premiums": p["total_to_pay"],
+                "projections": [{"return_pct": pr["rate"], "fund_at_age": pr["at"], "runs_out_at_age": pr["lapse_age"]}
+                                for pr in p["projections"]],
+                "statement_years": [{k: y[k] for k in ("from", "to", "premiums", "charges", "growth", "return_pct", "fund_end")}
+                                    for y in p["years"]],
+            }
+    return out
+
+
+def get_investments(user, name=None, **kwargs):
+    from financial_planner.models import Investment
+    qs = Investment.objects.filter(user=user).prefetch_related("payments")
+    if name:
+        inv, error = _find_one(qs, "name", name, "investment")
+        if error:
+            return {"ok": False, "message": error}
+        return {"ok": True, "investments": [_investment_brief(inv)]}
+    items = [_investment_brief(i) for i in qs]
+    return {"ok": True, "count": len(items), "investments": items,
+            "note": "Amounts are in each investment's own currency."}
+
+
+def update_investment_value(user, name, value, date=None, **kwargs):
+    """A new cash value (insurance) or balance (RD/FD) from a statement or app."""
+    from types import SimpleNamespace
+    from financial_planner.models import Investment
+    from financial_planner.serializers import InvestmentSerializer
+    inv, error = _find_one(Investment.objects.filter(user=user), "name", name, "investment")
+    if error:
+        return {"ok": False, "message": error}
+    if inv.kind == "chit":
+        return {"ok": False, "message": "A chit has no single value; log its monthly payment instead."}
+    try:
+        amount = _to_decimal(value, "value")
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    on = _parse_date(date)
+    if inv.kind == "insurance" and inv.plan:
+        plan = dict(inv.plan)
+        plan["values"] = [v for v in plan.get("values", []) if v.get("date") != on.isoformat()] + \
+                         [{"date": on.isoformat(), "fund": float(amount)}]
+        data = {"plan": plan}
+    else:
+        data = {"current_value": str(amount), "current_value_date": on.isoformat()}
+    ser = InvestmentSerializer(inv, data=data, partial=True, context={"request": SimpleNamespace(user=user)})
+    if not ser.is_valid():
+        return {"ok": False, "message": f"Couldn't save that: {ser.errors}"}
+    ser.save()
+    return {"ok": True, "message": f"{inv.name}: value set to {inv.currency} {amount:,.2f} on {on:%b %d, %Y}."}
+
+
+def add_chit_payment(user, name, amount, date=None, note="", **kwargs):
+    from financial_planner.models import Investment, InvestmentPayment
+    inv, error = _find_one(Investment.objects.filter(user=user, kind="chit"), "name", name, "chit")
+    if error:
+        return {"ok": False, "message": error}
+    try:
+        amt = _to_decimal(amount)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    if amt <= 0:
+        return {"ok": False, "message": "The amount must be more than 0."}
+    on = _parse_date(date)
+    InvestmentPayment.objects.create(investment=inv, date=on, amount=amt, note=str(note or "")[:200])
+    return {"ok": True, "message": f"Logged {inv.currency} {amt:,.2f} paid to {inv.name} on {on:%b %d, %Y}."}
+
+
+def list_goals(user, **kwargs):
+    from financial_planner.models import SavingsGoal
+    from financial_planner.serializers import SavingsGoalSerializer
+    goals = SavingsGoalSerializer(SavingsGoal.objects.filter(user=user), many=True).data
+    return {"ok": True, "currency": "CAD", "goals": [dict(g) for g in goals]}
+
+
+def add_goal(user, name, target, target_date=None, saved=0, **kwargs):
+    from financial_planner.models import SavingsGoal
+    name = str(name or "").strip()[:60]
+    if len(name) < 2:
+        return {"ok": False, "message": "Give the goal a name."}
+    try:
+        tgt, have = _to_decimal(target, "target"), _to_decimal(saved or 0, "saved")
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    if tgt <= 0 or have < 0:
+        return {"ok": False, "message": "The target must be more than 0."}
+    when = None
+    if target_date:
+        try:
+            when = datetime.strptime(str(target_date)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return {"ok": False, "message": "target_date must be a date like 2027-06-30."}
+    goal = SavingsGoal.objects.create(user=user, name=name, target=tgt, saved=have, target_date=when)
+    return {"ok": True, "message": f"Added the goal '{goal.name}': ${tgt:,.2f}" + (f" by {when:%b %Y}" if when else "") + "."}
+
+
+def add_to_goal(user, name, amount, **kwargs):
+    """Money put aside for a goal (a negative amount takes some out)."""
+    from financial_planner.models import SavingsGoal
+    goal, error = _find_one(SavingsGoal.objects.filter(user=user), "name", name, "goal")
+    if error:
+        return {"ok": False, "message": error}
+    try:
+        amt = _to_decimal(amount)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    goal.saved = max(goal.saved + amt, Decimal("0.00"))
+    goal.save(update_fields=["saved"])
+    done = " That's the goal reached. Well done!" if goal.saved >= goal.target else ""
+    verb = "Added" if amt >= 0 else "Took out"
+    return {"ok": True, "message": f"{verb} ${abs(amt):,.2f} {'to' if amt >= 0 else 'from'} '{goal.name}': "
+                                   f"${goal.saved:,.2f} of ${goal.target:,.2f} saved.{done}"}
+
+
+def delete_goal(user, name, **kwargs):
+    from financial_planner.models import SavingsGoal
+    goal, error = _find_one(SavingsGoal.objects.filter(user=user), "name", name, "goal")
+    if error:
+        return {"ok": False, "message": error}
+    label = goal.name
+    goal.delete()
+    return {"ok": True, "message": f"Removed the goal '{label}'."}
+
+
 TOOL_HANDLERS = {
     "calculate": calculate,
+    "get_investments": get_investments, "update_investment_value": update_investment_value,
+    "add_chit_payment": add_chit_payment,
+    "list_goals": list_goals, "add_goal": add_goal, "add_to_goal": add_to_goal, "delete_goal": delete_goal,
     "plan_payoff": plan_payoff,
     "monthly_review": monthly_review,
     "get_alerts": get_alerts,
@@ -854,6 +999,7 @@ MUTATING_TOOLS = {
     "generate_checklist", "rollover_month",
     "add_recurring_payment", "update_recurring_payment", "delete_recurring_payment",
     "add_rule", "delete_rule", "set_budget", "delete_budget", "remember", "forget",
+    "update_investment_value", "add_chit_payment", "add_goal", "add_to_goal", "delete_goal",
 }
 
 
@@ -862,6 +1008,57 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+    {
+        "name": "get_investments",
+        "description": (
+            "The user's investments: insurance policies (cash value, surrender value, paid so far, and for policies "
+            "with their plan data: projections at each return, age the fund would run out, total premiums, "
+            "statement years), chits, recurring and fixed deposits. Amounts in each one's own currency. "
+            "Give name for one."
+        ),
+        "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "Name or part of it."}}},
+    },
+    {
+        "name": "update_investment_value",
+        "description": "Set a new cash value (insurance) or balance (RD/FD) from a statement or the provider's app, in its own currency.",
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "value": {"type": "number"},
+            "date": {"type": "string", "description": "YYYY-MM-DD the value is from; defaults to today."}},
+            "required": ["name", "value"]},
+    },
+    {
+        "name": "add_chit_payment",
+        "description": "Log a chit instalment actually paid (they vary each month), in the chit's currency.",
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "amount": {"type": "number"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; defaults to today."}, "note": {"type": "string"}},
+            "required": ["name", "amount"]},
+    },
+    {
+        "name": "list_goals",
+        "description": "Savings goals (Planner > Savings): target, saved, what's left, and what to put aside a month to make the date. CAD.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "add_goal",
+        "description": "Add a savings goal, e.g. 'save $3,000 for a trip home by June'.",
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "target": {"type": "number"},
+            "target_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+            "saved": {"type": "number", "description": "Already saved, optional."}},
+            "required": ["name", "target"]},
+    },
+    {
+        "name": "add_to_goal",
+        "description": "Put money aside for a goal ('add $200 to the trip'); a negative amount takes some out.",
+        "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "amount": {"type": "number"}},
+                         "required": ["name", "amount"]},
+    },
+    {
+        "name": "delete_goal",
+        "description": "Remove a savings goal. Only when the user clearly asks to delete or remove it.",
+        "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+    },
     {
         "name": "plan_payoff",
         "description": (

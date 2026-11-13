@@ -357,3 +357,60 @@ class DebtInOtherCurrencyTests(TestCase):
         self.assertTrue(r["ok"], r)
         self.card.refresh_from_db()
         self.assertEqual((self.card.minimum_payment, self.card.original_currency), (Decimal("48.00"), "INR"))
+
+
+class InvestmentAndGoalToolTests(TestCase):
+    def setUp(self):
+        from financial_planner.models import Investment
+        from financial_planner.test_policy_plan import PLAN
+        self.user = get_user_model().objects.create_user(email="ig@example.test", username="ig", password="x-Test-12345")
+        self.policy = Investment.objects.create(user=self.user, kind="insurance", name="Life policy", currency="CAD",
+                                                start_date=date(2021, 1, 1), payment=50, plan=PLAN)
+        from financial_planner.policy_plan import validate_plan
+        self.policy.plan = validate_plan(PLAN)
+        self.policy.save()
+        self.rd = Investment.objects.create(user=self.user, kind="rd", name="Abroad RD", currency="INR",
+                                            start_date=date(2025, 1, 1), payment=7000, rate=7, months=60)
+        self.chit = Investment.objects.create(user=self.user, kind="chit", name="Chit 10L", currency="INR",
+                                              start_date=date(2024, 1, 1), payment=0, months=100, chit_value=1000000)
+
+    def test_investments(self):
+        from .tools import add_chit_payment, get_investments, update_investment_value
+        r = get_investments(self.user)
+        self.assertEqual(r["count"], 3)
+        pol = next(i for i in r["investments"] if i["name"] == "Life policy")
+        self.assertEqual(pol["policy"]["cover"], 100000)
+        self.assertEqual(len(pol["policy"]["projections"]), 2)
+        self.assertEqual(get_investments(self.user, "abroad")["investments"][0]["currency"], "INR")
+
+        self.assertTrue(update_investment_value(self.user, "life", 555.55, "2022-06-30")["ok"])
+        self.policy.refresh_from_db()
+        self.assertEqual(self.policy.plan["values"][-1], {"date": "2022-06-30", "fund": 555.55})
+        self.assertEqual(str(self.policy.current_value), "555.55")
+        self.assertTrue(update_investment_value(self.user, "abroad", 150000)["ok"])
+        self.rd.refresh_from_db()
+        self.assertEqual(str(self.rd.current_value), "150000.00")
+        self.assertFalse(update_investment_value(self.user, "chit", 5)["ok"])
+
+        self.assertTrue(add_chit_payment(self.user, "chit", 13500, "2026-11-05")["ok"])
+        self.assertEqual(self.chit.payments.get().amount, Decimal("13500"))
+        self.assertFalse(add_chit_payment(self.user, "abroad", 100)["ok"])          # not a chit
+
+    def test_goals(self):
+        from financial_planner.models import SavingsGoal
+        from .tools import add_goal, add_to_goal, delete_goal, list_goals
+        self.assertTrue(add_goal(self.user, "Trip home", 3000, "2027-06-30")["ok"])
+        r = add_to_goal(self.user, "trip", 200)
+        self.assertIn("$200.00 of $3,000.00", r["message"])
+        add_to_goal(self.user, "trip", -500)                                      # never below zero
+        self.assertEqual(SavingsGoal.objects.get().saved, Decimal("0.00"))
+        self.assertEqual(list_goals(self.user)["goals"][0]["name"], "Trip home")
+        self.assertTrue(delete_goal(self.user, "trip")["ok"])
+        self.assertFalse(SavingsGoal.objects.exists())
+        self.assertFalse(add_goal(self.user, "X", 10)["ok"])
+
+    def test_only_your_own(self):
+        from .tools import get_investments, update_investment_value
+        other = get_user_model().objects.create_user(email="ig2@example.test", username="ig2", password="x-Test-12345")
+        self.assertEqual(get_investments(other)["count"], 0)
+        self.assertFalse(update_investment_value(other, "life", 1)["ok"])
