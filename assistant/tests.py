@@ -461,3 +461,28 @@ class DebtHistoryToolTests(TestCase):
         self.assertEqual(student["planner_change"], "-200.00")
         self.assertEqual(student["planner_changes"][0]["why"], 'Ticked "Loan payment"')
         self.assertFalse(get_debt_history(user, "nothing like this")["ok"])
+
+
+class MyDayToolTests(TestCase):
+    def test_week_goal_task_plan_tick(self):
+        from unittest import mock
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from financial_planner.day_models import DayTask, WorkWeek
+        from .tools import add_day_task, add_time_goal, get_my_day, plan_day, set_work_hours, tick_slot
+        user = get_user_model().objects.create_user(email="md@example.test", username="md", password="x-Test-12345")
+        now = datetime(2026, 11, 15, 19, 0, tzinfo=ZoneInfo("America/Toronto"))           # a Sunday evening
+        with mock.patch("financial_planner.day_views.timezone.now", return_value=now):
+            d = get_my_day(user)
+            self.assertEqual((d["today"], d["tomorrow"]), ("2026-11-15", "2026-11-16"))
+            self.assertTrue(d["prompts"]["set_week"])
+            r = set_work_hours(user, {"Monday": "09:00-17:00", "tue": "12:00 to 20:00", "sat": "off"})
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(WorkWeek.objects.get().days["1"], [["12:00", "20:00"]])
+            self.assertFalse(set_work_hours(user, {"mon": "9am till late"})["ok"])
+            self.assertTrue(add_time_goal(user, "AZ-900", 60, "2027-01-15", "morning")["ok"])
+            self.assertTrue(add_day_task(user, "Groceries", "2026-11-16", 45)["ok"])
+            r = plan_day(user, "2026-11-16", wake_time="07:00")
+            self.assertEqual(r["slots"][:3], ["07:00-07:30 Wake up & get ready", "07:30-08:30 AZ-900", "09:00-17:00 Work"])
+            self.assertTrue(tick_slot(user, "groceries", "2026-11-16")["ok"])
+            self.assertTrue(DayTask.objects.get().done)

@@ -401,3 +401,7 @@ class SavingsGoal(models.Model):
 
     def __str__(self):
         return f"{self.user.email}: {self.name}"
+
+
+# My day (working week, time goals, day plans): kept in their own file.
+from .day_models import DayPlan, DayProfile, DayTask, Slot, TimeGoal, WorkWeek  # noqa: E402,F401

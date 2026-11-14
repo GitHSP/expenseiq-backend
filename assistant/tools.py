@@ -1030,8 +1030,116 @@ def get_debt_history(user, name=None, months=12, **kwargs):
                     "Planner changes are the user's own balance (payments ticked, monthly interest, statements)."}
 
 
+# ── My day: the week's hours, goals that need time, tasks and day plans ──
+
+_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _day_brief(user):
+    from financial_planner.day_views import overview
+    d = overview(user)
+    return {"now": d["now"], "today": d["today"], "tomorrow": d["tomorrow"], "profile": d["profile"],
+            "this_week_hours": d["week"]["days"], "next_week_hours": d["next_week"]["days"],
+            "next_week_start": d["next_week"]["start"], "this_week_start": d["week"]["start"],
+            "tomorrow_work": d["tomorrow_work"], "goals": d["goals"], "tasks": d["tasks"],
+            "plan_today": d["plans"]["today"], "plan_tomorrow": d["plans"]["tomorrow"], "prompts": d["prompts"],
+            "note": "Weekday keys in hours: 0 = Monday ... 6 = Sunday. Times are the user's local time."}
+
+
+def get_my_day(user, **kwargs):
+    return {"ok": True, **_day_brief(user)}
+
+
+def set_work_hours(user, days, week="next", **kwargs):
+    """days: {"mon": "09:00-17:00", "sat": "off", ...}; missing days are off."""
+    from financial_planner.day_views import Bad, _blocks, local_now, monday
+    from financial_planner.day_models import WorkWeek
+    from datetime import timedelta
+    if not isinstance(days, dict):
+        return {"ok": False, "message": "days must map weekdays to hours, e.g. {'mon': '09:00-17:00', 'sat': 'off'}."}
+    start = monday(local_now(user).date()) + timedelta(days=7 if week == "next" else 0)
+    out = {}
+    try:
+        for i, name in enumerate(_WEEKDAYS):
+            raw = next((v for k, v in days.items() if str(k).lower()[:3] == name), "off")
+            raw = str(raw or "off").strip().lower()
+            if raw in ("off", "none", "no", "", "day off"):
+                out[str(i)] = []
+                continue
+            blocks = [p.strip().split("-") for p in raw.replace("–", "-").replace(" to ", "-").split(",")]
+            out[str(i)] = _blocks([[a.strip(), b.strip()] for a, b in blocks], name.title())
+    except (Bad, ValueError) as e:
+        return {"ok": False, "message": f"{e} Use 24-hour times like '09:00-17:00', or 'off'."}
+    WorkWeek.objects.update_or_create(user=user, week_start=start, defaults={"days": out})
+    worked = [f"{_WEEKDAYS[int(k)].title()} {', '.join(f'{a}-{b}' for a, b in v)}" for k, v in out.items() if v]
+    return {"ok": True, "message": f"Saved working hours for the week of {start:%b %d}: " + ("; ".join(worked) or "no work days") + "."}
+
+
+def add_time_goal(user, name, minutes_per_day=60, deadline=None, when="any", **kwargs):
+    from financial_planner.day_models import TimeGoal
+    from financial_planner.day_views import Bad, _goal_fields
+    try:
+        fields = _goal_fields({"name": name, "minutes_per_day": minutes_per_day, "deadline": deadline, "when": when or "any"})
+    except Bad as e:
+        return {"ok": False, "message": str(e)}
+    goal = TimeGoal.objects.create(user=user, **fields)
+    return {"ok": True, "message": f"Added the goal '{goal.name}': {goal.minutes_per_day} minutes a day"
+            + (f" until {goal.deadline:%b %d, %Y}" if goal.deadline else "") + ". It's put into each day's plan."}
+
+
+def add_day_task(user, title, date=None, minutes=30, at=None, **kwargs):
+    from financial_planner.day_models import DayTask
+    from financial_planner.day_views import Bad, _task_fields
+    try:
+        fields = _task_fields({"title": title, "minutes": minutes or 30, "date": date, "at": at})
+    except Bad as e:
+        return {"ok": False, "message": str(e)}
+    t = DayTask.objects.create(user=user, **fields)
+    when = f" on {t.date:%a %b %d}" if t.date else ""
+    return {"ok": True, "message": f"Added '{t.title}' ({t.minutes} min){when}" + (f" at {t.at:%H:%M}" if t.at else "") + "."}
+
+
+def plan_day(user, date, wake_time=None, bed_time=None, working=None, work_start=None, work_end=None, **kwargs):
+    """Build that day's time slots: around work, with the goals and the day's tasks."""
+    from financial_planner.day_views import Bad, _date, _time, hhmm, make_plan, profile, work_on
+    prof = profile(user)
+    try:
+        day = _date(date, "date")
+        wake = _time(wake_time, "wake_time") if wake_time else prof.wake_time
+        bed = _time(bed_time, "bed_time") if bed_time else prof.bed_time
+        if work_start and work_end:
+            work = [[hhmm(_time(work_start, "work_start")), hhmm(_time(work_end, "work_end"))]]
+        else:
+            work = work_on(user, day)
+    except Bad as e:
+        return {"ok": False, "message": str(e)}
+    if working is False:
+        work = []
+    plan = make_plan(user, day, wake, bed, bool(work), work)
+    return {"ok": True, "message": f"Planned {day:%A %b %d}.",
+            "slots": [f"{x.start:%H:%M}-{x.end:%H:%M} {x.title}" for x in plan.slots.all()],
+            "did_not_fit": plan.unplaced}
+
+
+def tick_slot(user, title, date=None, done=True, **kwargs):
+    from financial_planner.day_models import Slot
+    from financial_planner.day_views import _date, local_now
+    day = _date(date, "date") if date else local_now(user).date()
+    slot, error = _find_one(Slot.objects.filter(plan__user=user, plan__date=day), "title", title, "slot")
+    if error:
+        return {"ok": False, "message": error}
+    slot.done = bool(done)
+    slot.save(update_fields=["done"])
+    if slot.task_id:
+        slot.task.done = slot.done
+        slot.task.save(update_fields=["done"])
+    return {"ok": True, "message": f"{'Ticked' if slot.done else 'Unticked'} {slot.title} ({slot.start:%H:%M})."}
+
+
 TOOL_HANDLERS = {
     "calculate": calculate,
+    "get_my_day": get_my_day, "set_work_hours": set_work_hours, "add_time_goal": add_time_goal,
+    "add_day_task": add_day_task, "plan_day": plan_day, "tick_slot": tick_slot,
     "get_debt_history": get_debt_history,
     "get_investments": get_investments, "update_investment_value": update_investment_value,
     "add_chit_payment": add_chit_payment,
@@ -1081,6 +1189,7 @@ MUTATING_TOOLS = {
     "add_recurring_payment", "update_recurring_payment", "delete_recurring_payment",
     "add_rule", "delete_rule", "set_budget", "delete_budget", "remember", "forget",
     "update_investment_value", "add_chit_payment", "add_goal", "add_to_goal", "delete_goal",
+    "set_work_hours", "add_time_goal", "add_day_task", "plan_day", "tick_slot",
 }
 
 
@@ -1089,6 +1198,56 @@ MUTATING_TOOLS = {
 # ─────────────────────────────────────────────
 
 TOOL_SCHEMAS = [
+    {
+        "name": "get_my_day",
+        "description": ("My day: today's and tomorrow's dates (the user's local time), today's and tomorrow's plans "
+                        "(time slots, ticked or not), this and next week's working hours, tomorrow's work, goals with "
+                        "progress, tasks, and whether it's time to set next week's hours or plan tomorrow."),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_work_hours",
+        "description": "Save a week's working hours. days maps weekdays to 'HH:MM-HH:MM' (24-hour) or 'off'; days left out are off.",
+        "input_schema": {"type": "object", "properties": {
+            "days": {"type": "object", "description": "e.g. {'mon': '09:00-17:00', 'tue': '12:00-20:00', 'sat': 'off'}"},
+            "week": {"type": "string", "enum": ["this", "next"], "description": "Default next (asked on Sundays)."}},
+            "required": ["days"]},
+    },
+    {
+        "name": "add_time_goal",
+        "description": "A goal that needs time regularly, e.g. 'study for AZ-900, an hour a day until Jan 15'. It's put into each day's plan.",
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "minutes_per_day": {"type": "integer"},
+            "deadline": {"type": "string", "description": "YYYY-MM-DD, optional"},
+            "when": {"type": "string", "enum": ["any", "morning", "evening"]}},
+            "required": ["name"]},
+    },
+    {
+        "name": "add_day_task",
+        "description": "Something to do on a day, with roughly how long it takes; at only if it has a set time (e.g. an appointment).",
+        "input_schema": {"type": "object", "properties": {
+            "title": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "minutes": {"type": "integer"}, "at": {"type": "string", "description": "HH:MM, optional"}},
+            "required": ["title", "date"]},
+    },
+    {
+        "name": "plan_day",
+        "description": ("Build a day's plan in time slots: wake-up routine, work, the goals and that day's tasks. Uses the "
+                        "week's working hours unless work_start/work_end or working=false are given. Replans if one exists."),
+        "input_schema": {"type": "object", "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD"}, "wake_time": {"type": "string"},
+            "bed_time": {"type": "string"}, "working": {"type": "boolean"},
+            "work_start": {"type": "string"}, "work_end": {"type": "string"}},
+            "required": ["date"]},
+    },
+    {
+        "name": "tick_slot",
+        "description": "Mark a slot in a day's plan done (or not), e.g. 'I finished studying'.",
+        "input_schema": {"type": "object", "properties": {
+            "title": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD; default today"},
+            "done": {"type": "boolean"}},
+            "required": ["title"]},
+    },
     {
         "name": "get_debt_history",
         "description": (

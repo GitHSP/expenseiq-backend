@@ -1,0 +1,34 @@
+# Glacier's clock: calls the server twice a day so it can send emails.
+#   13:00 UTC = 8 AM Toronto (winter; 9 AM in summer): the reminders email
+#   01:00 UTC = 8 PM Toronto (winter; 9 PM in summer): "plan tomorrow"
+# Needs the repository secret CRON_KEY, the same value as CRON_KEY in the
+# server's .env. Run it by hand from the Actions tab to test.
+name: Glacier clock
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "morning or evening"
+        required: true
+        default: "evening"
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Glacier
+        env:
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+          INPUT_JOB: ${{ github.event.inputs.job }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ -n "$INPUT_JOB" ]; then JOB="$INPUT_JOB";
+          elif [ "$SCHEDULE" = "0 13 * * *" ]; then JOB=morning;
+          else JOB=evening; fi
+          case "$JOB" in morning|evening) ;; *) echo "job must be morning or evening"; exit 1;; esac
+          curl -fsS --retry 3 --retry-delay 20 -X POST "https://sarathpeethu.pythonanywhere.com/api/fp/day/cron/" \
+            -H "X-Cron-Key: $CRON_KEY" -H "Content-Type: application/json" -d "{\"job\":\"$JOB\"}"
