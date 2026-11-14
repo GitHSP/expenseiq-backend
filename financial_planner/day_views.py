@@ -73,8 +73,8 @@ def _blocks(v, field="work"):
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise Bad(f"{field} must be a list of [start, end] times.")
         s, e = _time(pair[0], field), _time(pair[1], field)
-        if e <= s:
-            raise Bad("Work must end after it starts.")
+        if e == s:
+            raise Bad("Work can't start and end at the same time.")   # an earlier end = after midnight
         out.append([hhmm(s), hhmm(e)])
     return out
 
@@ -100,7 +100,7 @@ def goal_today(goal, d):
 def done_minutes(goal, start, end):
     total = 0
     for s in Slot.objects.filter(goal=goal, done=True, plan__date__gte=start, plan__date__lte=end):
-        total += scheduler.to_min(s.end) - scheduler.to_min(s.start)
+        total += scheduler.length(s.start, s.end)
     return total
 
 
@@ -109,7 +109,7 @@ def minutes_for(goal, d):
     if not goal_today(goal, d):
         return 0
     planned = Slot.objects.filter(goal=goal, plan__date=d - timedelta(days=1))
-    missed = sum(scheduler.to_min(s.end) - scheduler.to_min(s.start) for s in planned if not s.done)
+    missed = sum(scheduler.length(s.start, s.end) for s in planned if not s.done)
     return goal.minutes_per_day + min(missed, goal.minutes_per_day)
 
 
@@ -133,6 +133,7 @@ def plan_json(plan):
         "date": plan.date.isoformat(), "wake_time": hhmm(plan.wake_time), "bed_time": hhmm(plan.bed_time),
         "working": plan.working, "work": plan.work, "unplaced": plan.unplaced,
         "slots": [{"id": s.id, "start": hhmm(s.start), "end": hhmm(s.end), "title": s.title, "kind": s.kind,
+                   "start_min": s.order, "end_min": s.order + scheduler.length(s.start, s.end),
                    "goal": s.goal_id, "task": s.task_id, "done": s.done} for s in plan.slots.all()],
     }
 
@@ -161,7 +162,7 @@ def make_plan(user, d, wake, bed, working, work):
                                   unplaced=[{"kind": k, "title": title, "minutes": m} for k, _, title, m in unplaced])
     for s in slots:
         Slot.objects.create(plan=plan, start=scheduler.to_time(s["start"]), end=scheduler.to_time(s["end"]),
-                            title=s["title"], kind=s["kind"],
+                            title=s["title"], kind=s["kind"], order=s["start"],
                             goal_id=s["key"] if s["kind"] == "goal" else None,
                             task_id=s["key"] if s["kind"] == "task" else None,
                             done=(s["title"], s["kind"]) in was_done)
@@ -397,14 +398,15 @@ class SlotView(APIView):
             day = _date(d.get("date"), "date")
             start, end = _time(d.get("start"), "start"), _time(d.get("end"), "end")
             title = str(d.get("title", "")).strip()[:120]
-            if not title or end <= start:
-                raise Bad("Give a title, and an end after the start.")
+            if not title or end == start:
+                raise Bad("Give a title, and a start and end time.")
         except Bad as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         plan = DayPlan.objects.filter(user=request.user, date=day).first()
         if not plan:
             return Response({"error": "Plan that day first."}, status=status.HTTP_400_BAD_REQUEST)
-        Slot.objects.create(plan=plan, start=start, end=end, title=title, kind="other")
+        order = scheduler.to_min(start) + (24 * 60 if start < plan.wake_time else 0)
+        Slot.objects.create(plan=plan, start=start, end=end, title=title, kind="other", order=order)
         return Response(overview(request.user), status=status.HTTP_201_CREATED)
 
     def patch(self, request, pk):
@@ -417,8 +419,9 @@ class SlotView(APIView):
                 slot.start = _time(d["start"], "start")
             if "end" in d:
                 slot.end = _time(d["end"], "end")
-            if slot.end <= slot.start:
-                raise Bad("The end must be after the start.")
+            if slot.end == slot.start:
+                raise Bad("A slot can't start and end at the same time.")
+            slot.order = scheduler.to_min(slot.start) + (24 * 60 if slot.start < slot.plan.wake_time else 0)
             if "title" in d:
                 slot.title = str(d["title"]).strip()[:120] or slot.title
         except Bad as e:

@@ -35,6 +35,18 @@ class SchedulerTests(TestCase):
         self.assertEqual(unplaced, [("task", 1, "Long job", 200)])
 
 
+class PastMidnightTests(TestCase):
+    def test_evening_shift_and_late_bedtime(self):
+        slots, unplaced = sch.build(time(10, 0), time(1, 0), work=[("16:00", "00:00")],
+                                    fixed=[(1, "Call family", time(0, 15), 30)],
+                                    goals=[(1, "AZ-204", 60, "morning")], tasks=[(2, "Food", 45)])
+        shown = [(sch.to_time(s["start"]).strftime("%H:%M"), sch.to_time(s["end"]).strftime("%H:%M"), s["title"]) for s in slots]
+        self.assertEqual(shown, [("10:00", "10:30", "Wake up & get ready"), ("10:30", "11:30", "AZ-204"),
+                                 ("11:40", "12:25", "Food"), ("16:00", "00:00", "Work"), ("00:15", "00:45", "Call family")])
+        self.assertEqual(unplaced, [])
+        self.assertEqual(sch.length(time(16), time(0)), 480)
+
+
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class MyDayApiTests(TestCase):
     def setUp(self):
@@ -80,6 +92,13 @@ class MyDayApiTests(TestCase):
         self.assertTrue(DayTask.objects.get().done)
         self.assertEqual(r.data["goals"][0]["total_done"], 60)
 
+    def test_night_shift_plan_through_the_api(self):
+        r = self.client.post("/api/fp/day/plan/", {"date": "2026-11-15", "wake_time": "10:00", "bed_time": "01:00",
+                                                   "working": True, "work": [["16:00", "00:00"]]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        work = next(s for s in r.data["plans"]["tomorrow"]["slots"] if s["title"] == "Work")
+        self.assertEqual((work["start"], work["end"], work["start_min"], work["end_min"]), ("16:00", "00:00", 960, 1440))
+
     def test_missed_goal_time_carries_to_the_next_day(self):
         goal = TimeGoal.objects.create(user=self.user, name="Study", minutes_per_day=60)
         plan = DayPlan.objects.create(user=self.user, date=date(2026, 11, 14), wake_time=time(7), bed_time=time(23))
@@ -92,7 +111,7 @@ class MyDayApiTests(TestCase):
     def test_validation_and_privacy(self):
         self.assertEqual(self.client.post("/api/fp/day/goals/", {"name": "X"}, format="json").status_code, 400)
         self.assertEqual(self.client.put("/api/fp/day/week/", {"week_start": "2026-11-16",
-                         "days": {"0": [["17:00", "09:00"]]}}, format="json").status_code, 400)
+                         "days": {"0": [["17:00", "17:00"]]}}, format="json").status_code, 400)
         self.client.post("/api/fp/day/plan/", {"date": "2026-11-15"}, format="json")
         slot = Slot.objects.first()
         other = get_user_model().objects.create_user(email="d2@example.test", username="d2", password="x-Test-12345")

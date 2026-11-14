@@ -83,6 +83,8 @@ class Slot(models.Model):
     goal = models.ForeignKey(TimeGoal, on_delete=models.SET_NULL, null=True, blank=True, related_name="slots")
     task = models.ForeignKey(DayTask, on_delete=models.SET_NULL, null=True, blank=True, related_name="slots")
     done = models.BooleanField(default=False)
+    # Minutes from the start of the plan's date, so slots after midnight sort last.
+    order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
-        ordering = ["start", "id"]
+        ordering = ["order", "start", "id"]

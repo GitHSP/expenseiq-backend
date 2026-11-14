@@ -8,6 +8,9 @@ goals that need time today and the things to do, in the free time before bed.
     when no gap is long enough;
   - things to do: in order, in the first gap they fit;
   - 10 minutes are left between things; whatever doesn't fit is reported.
+
+A day can run past midnight (a 4 PM to 12 AM shift, bed at 1 AM): minutes go
+past 1440 then, and times wrap round when they're shown.
 """
 from datetime import time
 
@@ -24,8 +27,14 @@ def to_min(t):
 
 
 def to_time(minutes):
-    minutes = max(0, min(minutes, 24 * 60 - 1))
+    minutes = int(minutes) % (24 * 60)
     return time(minutes // 60, minutes % 60)
+
+
+def length(start, end):
+    """Minutes from start to end; an end at or before the start is the next day."""
+    m = (to_min(end) - to_min(start)) % (24 * 60)
+    return m or 24 * 60
 
 
 def _subtract(free, start, end):
@@ -48,17 +57,23 @@ def build(wake, bed, work=(), fixed=(), goals=(), tasks=()):
     kind and key; unplaced are (kind, key, title, minutes) that didn't fit."""
     w, b = to_min(wake), to_min(bed)
     if b <= w:
-        b = 24 * 60 - 1
+        b += 24 * 60                                    # bed after midnight
     slots = [{"start": w, "end": min(w + ROUTINE_MINUTES, b), "title": "Wake up & get ready", "kind": "routine", "key": None}]
     free = [(w + ROUTINE_MINUTES, b)]
 
     for s, e in work:
         s, e = to_min(s), to_min(e)
+        if e <= s:
+            e += 24 * 60                                # a shift that ends after midnight
+        if s < w and e - s < 24 * 60 and s + 24 * 60 < b:
+            s, e = s + 24 * 60, e + 24 * 60             # starts after midnight, before bed
         if e > s:
             slots.append({"start": s, "end": e, "title": "Work", "kind": "work", "key": None})
             free = _subtract(free, s, e)
     for key, title, at, minutes in fixed:
         s = to_min(at)
+        if s < w:
+            s += 24 * 60                                # after midnight
         slots.append({"start": s, "end": s + minutes, "title": title, "kind": "task", "key": key})
         free = _subtract(free, s, s + minutes + GAP)
 
