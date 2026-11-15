@@ -492,6 +492,19 @@ class SlotView(APIView):
         return Response(overview(request.user))
 
 
+class BackupView(APIView):
+    """GET /api/fp/backup/ - all of the user's data as one file (see backup.py)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.http import HttpResponse
+        from .backup import build_backup, filename
+        response = HttpResponse(build_backup(request.user), content_type="application/gzip")
+        response["Content-Disposition"] = f'attachment; filename="{filename(request.user)}"'
+        response["Cache-Control"] = "no-store"
+        return response
+
+
 class SmokeView(APIView):
     """POST /api/fp/day/smoke/ {smoked: bool, date?} - today's (or a recent day's) answer."""
     permission_classes = [IsAuthenticated]
@@ -529,7 +542,8 @@ class CronView(APIView):
             from django.core.management import call_command
             out = StringIO()
             call_command("send_reminders", stdout=out)
-            return Response({"job": job, "result": out.getvalue().strip()[-200:]})
+            from .backup import send_backups                  # Sundays: the weekly backup
+            return Response({"job": job, "result": out.getvalue().strip()[-200:], "backups": send_backups()})
         if job == "evening":
             from .day_emails import send_evening
             return Response({"job": job, "sent": send_evening()})

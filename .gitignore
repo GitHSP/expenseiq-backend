@@ -11,3 +11,6 @@ staticfiles/
 
 # Database files and backups
 *.sqlite3*
+
+# Users' documents (encrypted files): never in git
+private_documents/
