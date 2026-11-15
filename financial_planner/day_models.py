@@ -85,6 +85,19 @@ class Slot(models.Model):
     done = models.BooleanField(default=False)
     # Minutes from the start of the plan's date, so slots after midnight sort last.
     order = models.PositiveSmallIntegerField(default=0)
+    # Minutes actually spent, from the focus timer (0 = not timed).
+    focused_minutes = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         ordering = ["order", "start", "id"]
+
+
+class SmokeLog(models.Model):
+    """One tap a day: smoke-free or not. The streak and the money saved come from these."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="smoke_logs")
+    date = models.DateField()
+    smoked = models.BooleanField()
+
+    class Meta:
+        unique_together = ["user", "date"]
+        ordering = ["-date"]

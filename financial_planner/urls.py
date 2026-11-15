@@ -57,5 +57,6 @@ urlpatterns += [
     path("day/plan/", day_views.PlanView.as_view(), name="day-plan"),
     path("day/slots/", day_views.SlotView.as_view(), name="day-slots"),
     path("day/slots/<int:pk>/", day_views.SlotView.as_view(), name="day-slot"),
+    path("day/smoke/", day_views.SmokeView.as_view(), name="day-smoke"),
     path("day/cron/", day_views.CronView.as_view(), name="day-cron"),
 ]

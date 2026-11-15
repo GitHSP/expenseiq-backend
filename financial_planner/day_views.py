@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import day_scheduler as scheduler
-from .day_models import DayPlan, DayProfile, DayTask, Slot, TimeGoal, WorkWeek
+from .day_models import DayPlan, DayProfile, DayTask, Slot, SmokeLog, TimeGoal, WorkWeek
 
 TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -97,11 +97,53 @@ def goal_today(goal, d):
     return not goal.weekdays or d.weekday() in goal.weekdays
 
 
+def slot_minutes(s):
+    """Time spent on a slot: what the focus timer counted, else the slot's length once ticked."""
+    if s.focused_minutes:
+        return s.focused_minutes
+    return scheduler.length(s.start, s.end) if s.done else 0
+
+
 def done_minutes(goal, start, end):
-    total = 0
-    for s in Slot.objects.filter(goal=goal, done=True, plan__date__gte=start, plan__date__lte=end):
-        total += scheduler.length(s.start, s.end)
-    return total
+    from django.db.models import Q
+    return sum(slot_minutes(s) for s in Slot.objects.filter(goal=goal, plan__date__gte=start, plan__date__lte=end)
+               .filter(Q(done=True) | Q(focused_minutes__gt=0)))
+
+
+def smoke_json(user, today):
+    """The smoke-free streak (today counts once it's tapped), the last 7 days,
+    and roughly what the streak has saved (the usual daily spend on Smoke & Vape)."""
+    from decimal import Decimal
+    from expenses.models import Expense
+    logs = {l.date: l.smoked for l in SmokeLog.objects.filter(user=user, date__gte=today - timedelta(days=400))}
+    day = today if today in logs else today - timedelta(days=1)
+    streak = 0
+    while logs.get(day) is False:
+        streak += 1
+        day -= timedelta(days=1)
+    best = run = 0
+    prev = None
+    for d in sorted(logs):                              # longest run of smoke-free days in a row
+        if logs[d] is False:
+            run = run + 1 if prev and d - prev == timedelta(days=1) and logs[prev] is False else 1
+        else:
+            run = 0
+        best, prev = max(best, run), d
+    since = today - timedelta(days=90)
+    spent = sum((e.amount for e in Expense.objects.filter(user=user, category="Smoke & Vape", date__gte=since, date__lte=today)),
+                Decimal("0"))
+    per_day = spent / 90
+    return {
+        "used": bool(logs),
+        "asked_today": today in logs,
+        "smoked_today": logs.get(today),
+        "streak": streak,
+        "best": max(best, streak),
+        "week": [{"date": (today - timedelta(days=i)).isoformat(), "smoked": logs.get(today - timedelta(days=i))}
+                 for i in range(6, -1, -1)],
+        "per_day": str(per_day.quantize(Decimal("0.01"))),
+        "saved": str((per_day * streak).quantize(Decimal("0.01"))),
+    }
 
 
 def minutes_for(goal, d):
@@ -134,6 +176,7 @@ def plan_json(plan):
         "working": plan.working, "work": plan.work, "unplaced": plan.unplaced,
         "slots": [{"id": s.id, "start": hhmm(s.start), "end": hhmm(s.end), "title": s.title, "kind": s.kind,
                    "start_min": s.order, "end_min": s.order + scheduler.length(s.start, s.end),
+                   "focused_minutes": s.focused_minutes,
                    "goal": s.goal_id, "task": s.task_id, "done": s.done} for s in plan.slots.all()],
     }
 
@@ -189,6 +232,7 @@ def overview(user):
         "goals": [goal_json(g, today) for g in TimeGoal.objects.filter(user=user)],
         "tasks": [task_json(t) for t in DayTask.objects.filter(user=user, done=False).exclude(date__lt=today)[:50]],
         "plans": {"today": plan_json(plans.get(today)), "tomorrow": plan_json(plans.get(tomorrow))},
+        "smoke": smoke_json(user, today),
         "prompts": {
             # Each Sunday (or the first time): the coming week's working hours.
             "set_week": (not has_any_week) or (today.weekday() == 6 and next_week is None),
@@ -426,6 +470,15 @@ class SlotView(APIView):
                 slot.title = str(d["title"]).strip()[:120] or slot.title
         except Bad as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        if "focused_minutes" in d:                          # from the focus timer
+            try:
+                focused = int(d["focused_minutes"])
+            except (TypeError, ValueError):
+                return Response({"error": "focused_minutes must be a number."}, status=status.HTTP_400_BAD_REQUEST)
+            slot.focused_minutes = max(0, min(focused, 720))
+            # Most of the slot done counts as done.
+            if slot.focused_minutes >= 0.8 * scheduler.length(slot.start, slot.end):
+                d = {**d, "done": True}
         if "done" in d:
             slot.done = bool(d["done"])
             if slot.task:                                   # a task's slot ticked = the task is done
@@ -436,6 +489,24 @@ class SlotView(APIView):
 
     def delete(self, request, pk):
         Slot.objects.filter(plan__user=request.user, pk=pk).delete()
+        return Response(overview(request.user))
+
+
+class SmokeView(APIView):
+    """POST /api/fp/day/smoke/ {smoked: bool, date?} - today's (or a recent day's) answer."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        today = local_now(request.user).date()
+        try:
+            day = _date(request.data["date"], "date") if request.data.get("date") else today
+        except Bad as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        if not today - timedelta(days=7) <= day <= today:
+            return Response({"error": "Answer for today or the last week."}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(request.data.get("smoked"), bool):
+            return Response({"error": "smoked must be true or false."}, status=status.HTTP_400_BAD_REQUEST)
+        SmokeLog.objects.update_or_create(user=request.user, date=day, defaults={"smoked": request.data["smoked"]})
         return Response(overview(request.user))
 
 

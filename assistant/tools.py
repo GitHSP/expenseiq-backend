@@ -1121,6 +1121,21 @@ def plan_day(user, date, wake_time=None, bed_time=None, working=None, work_start
             "did_not_fit": plan.unplaced}
 
 
+def log_smoke(user, smoked, date=None, **kwargs):
+    """Smoke-free today (or not): the streak on My day."""
+    from datetime import timedelta
+    from financial_planner.day_models import SmokeLog
+    from financial_planner.day_views import _date, local_now, smoke_json
+    today = local_now(user).date()
+    day = _date(date, "date") if date else today
+    if not today - timedelta(days=7) <= day <= today:
+        return {"ok": False, "message": "Only today or the last week."}
+    SmokeLog.objects.update_or_create(user=user, date=day, defaults={"smoked": bool(smoked)})
+    s = smoke_json(user, today)
+    return {"ok": True, "message": f"Noted: {'smoked' if smoked else 'smoke-free'} on {day:%a %b %d}.",
+            "streak_days": s["streak"], "best_days": s["best"], "saved": s["saved"]}
+
+
 def tick_slot(user, title, date=None, done=True, **kwargs):
     from financial_planner.day_models import Slot
     from financial_planner.day_views import _date, local_now
@@ -1139,7 +1154,7 @@ def tick_slot(user, title, date=None, done=True, **kwargs):
 TOOL_HANDLERS = {
     "calculate": calculate,
     "get_my_day": get_my_day, "set_work_hours": set_work_hours, "add_time_goal": add_time_goal,
-    "add_day_task": add_day_task, "plan_day": plan_day, "tick_slot": tick_slot,
+    "add_day_task": add_day_task, "plan_day": plan_day, "tick_slot": tick_slot, "log_smoke": log_smoke,
     "get_debt_history": get_debt_history,
     "get_investments": get_investments, "update_investment_value": update_investment_value,
     "add_chit_payment": add_chit_payment,
@@ -1189,7 +1204,7 @@ MUTATING_TOOLS = {
     "add_recurring_payment", "update_recurring_payment", "delete_recurring_payment",
     "add_rule", "delete_rule", "set_budget", "delete_budget", "remember", "forget",
     "update_investment_value", "add_chit_payment", "add_goal", "add_to_goal", "delete_goal",
-    "set_work_hours", "add_time_goal", "add_day_task", "plan_day", "tick_slot",
+    "set_work_hours", "add_time_goal", "add_day_task", "plan_day", "tick_slot", "log_smoke",
 }
 
 
@@ -1239,6 +1254,13 @@ TOOL_SCHEMAS = [
             "bed_time": {"type": "string"}, "working": {"type": "boolean"},
             "work_start": {"type": "string"}, "work_end": {"type": "string"}},
             "required": ["date"]},
+    },
+    {
+        "name": "log_smoke",
+        "description": "The user's smoke-free tracker: 'I didn't smoke today' (smoked=false) or 'I smoked' (smoked=true). Be encouraging either way.",
+        "input_schema": {"type": "object", "properties": {
+            "smoked": {"type": "boolean"}, "date": {"type": "string", "description": "YYYY-MM-DD; default today"}},
+            "required": ["smoked"]},
     },
     {
         "name": "tick_slot",

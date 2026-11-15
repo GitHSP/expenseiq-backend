@@ -132,3 +132,54 @@ class MyDayApiTests(TestCase):
         with mock.patch.dict("os.environ", {"CRON_KEY": ""}):
             self.assertEqual(anon.post("/api/fp/day/cron/", {"job": "evening"}, format="json",
                                        HTTP_X_CRON_KEY="").status_code, 404)        # no key set: closed
+
+
+class SmokeAndFocusTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from expenses.models import Expense
+        self.user = get_user_model().objects.create_user(email="sf@example.test", username="sf", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.now = datetime(2026, 11, 20, 9, 0, tzinfo=ZoneInfo("America/Toronto"))
+        self.patch = mock.patch("financial_planner.day_views.timezone.now", return_value=self.now)
+        self.patch.start()
+        Expense.objects.create(user=self.user, title="Smokes", amount=Decimal("450"), category="Smoke & Vape", date=date(2026, 10, 1))
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def answer(self, day, smoked):
+        return self.client.post("/api/fp/day/smoke/", {"date": day, "smoked": smoked}, format="json")
+
+    def test_streak_best_and_saved(self):
+        s = self.client.get("/api/fp/day/").data["smoke"]
+        self.assertEqual((s["used"], s["streak"]), (False, 0))
+        for day, smoked in (("2026-11-14", False), ("2026-11-15", False), ("2026-11-16", True),
+                            ("2026-11-17", False), ("2026-11-18", False), ("2026-11-19", False)):
+            self.answer(day, smoked)
+        s = self.client.get("/api/fp/day/").data["smoke"]
+        self.assertEqual(s["streak"], 3)                     # today not answered yet: counts to yesterday
+        self.assertFalse(s["asked_today"])
+        self.assertEqual(s["per_day"], "5.00")               # $450 over 90 days
+        self.assertEqual(s["saved"], "15.00")
+        s = self.answer("2026-11-20", False).data["smoke"]
+        self.assertEqual((s["streak"], s["best"], s["asked_today"]), (4, 4, True))
+        self.assertEqual([d["smoked"] for d in s["week"]], [False, False, True, False, False, False, False])
+        s = self.answer("2026-11-20", True).data["smoke"]    # changed my mind
+        self.assertEqual((s["streak"], s["best"]), (0, 3))           # the 17th to the 19th
+        self.assertEqual(self.answer("2026-10-01", False).status_code, 400)   # too far back
+        self.assertEqual(self.client.post("/api/fp/day/smoke/", {"smoked": "no"}, format="json").status_code, 400)
+
+    def test_focus_timer_counts_real_minutes(self):
+        goal = TimeGoal.objects.create(user=self.user, name="AZ-204", minutes_per_day=60)
+        r = self.client.post("/api/fp/day/plan/", {"date": "2026-11-20", "wake_time": "07:00"}, format="json")
+        slot = next(s for s in r.data["plans"]["today"]["slots"] if s["title"] == "AZ-204")
+        r = self.client.patch(f"/api/fp/day/slots/{slot['id']}/", {"focused_minutes": 25}, format="json")
+        after = next(s for s in r.data["plans"]["today"]["slots"] if s["id"] == slot["id"])
+        self.assertEqual((after["focused_minutes"], after["done"]), (25, False))     # under 80%: not done yet
+        self.assertEqual(r.data["goals"][0]["week_done"], 25)
+        r = self.client.patch(f"/api/fp/day/slots/{slot['id']}/", {"focused_minutes": 52}, format="json")
+        after = next(s for s in r.data["plans"]["today"]["slots"] if s["id"] == slot["id"])
+        self.assertTrue(after["done"])                                                # 52 of 60: done
+        self.assertEqual(r.data["goals"][0]["total_done"], 52)
