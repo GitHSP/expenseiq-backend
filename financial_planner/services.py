@@ -86,15 +86,18 @@ def toggle_checklist_item(item, paid=None):
 
 def recalculate_avalanche_order(user):
     """
-    Re-rank a user's active debts by APR descending (1 = highest priority).
-    Ties go to the smaller balance, which gets paid off — and freed up — sooner.
+    Re-rank a user's active debts (1 = pay off first). By default by APR,
+    highest first, with ties going to the smaller balance (freed up sooner).
+    If the user has set their own order (Debt.priority), that wins; debts
+    without one follow, by APR.
     """
+    from django.db.models import F
     from .models import Debt
-    debts = (
-        Debt.objects
-        .filter(user=user, is_active=True)
-        .order_by('-annual_interest_rate', 'current_balance')
-    )
+    active = Debt.objects.filter(user=user, is_active=True)
+    if active.filter(priority__isnull=False).exists():
+        debts = active.order_by(F("priority").asc(nulls_last=True), '-annual_interest_rate', 'current_balance')
+    else:
+        debts = active.order_by('-annual_interest_rate', 'current_balance')
     for i, debt in enumerate(debts, start=1):
         debt.avalanche_order = i
         debt.save(update_fields=['avalanche_order'])

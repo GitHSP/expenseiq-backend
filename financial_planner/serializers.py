@@ -40,7 +40,7 @@ class DebtSerializer(serializers.ModelSerializer):
             'id', 'name', 'debt_type',
             'current_balance', 'annual_interest_rate',
             'minimum_payment', 'credit_limit',
-            'due_day', 'avalanche_order',
+            'due_day', 'avalanche_order', 'priority',
             'is_active', 'paid_off_date', 'notes',
             'original_currency', 'original_current_balance', 'original_minimum_payment', 'original_credit_limit',
             'created_at', 'updated_at',

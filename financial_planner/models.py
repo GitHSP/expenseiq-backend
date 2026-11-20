@@ -25,6 +25,9 @@ class Debt(models.Model):
     credit_limit = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)  # for credit cards
     due_day = models.PositiveSmallIntegerField(null=True, blank=True)  # day of month payment is due
     avalanche_order = models.PositiveSmallIntegerField(default=1)  # 1 = highest priority
+    # The user's own order (1 = pay off first). When any debt has one, the user's
+    # order is used instead of highest interest first; see recalculate_avalanche_order.
+    priority = models.PositiveSmallIntegerField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     paid_off_date = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)

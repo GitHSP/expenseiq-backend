@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     # ── Debts ──
     path('debts/',              views.DebtListCreateView.as_view(),              name='fp-debt-list'),
+    path('debts/priority/',     views.DebtPriorityView.as_view(),                name='fp-debt-priority'),
     path('debts/history/',      views.DebtHistoryView.as_view(),                 name='fp-debt-history'),
     path('debts/<int:pk>/',     views.DebtDetailView.as_view(),                  name='fp-debt-detail'),
 

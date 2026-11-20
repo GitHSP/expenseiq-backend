@@ -45,6 +45,7 @@ def _debts(user):
         pays = linked.get(d.id, float(d.minimum_payment))
         follows_interest = d.debt_type == "credit_card" and d.id not in linked
         out.append({"id": d.id, "name": d.name, "balance": balance, "rate": rate, "pays": pays,
+                    "rank": d.avalanche_order,                  # the user's own order, or highest rate first
                     "follows_interest": follows_interest, "is_card": d.debt_type == "credit_card",
                     "principal": max(pays - balance * rate / 12, MIN_CARD_PRINCIPAL),
                     "limit": float(d.credit_limit) if d.credit_limit else None})
@@ -58,7 +59,8 @@ def simulate(debts, budget=None, max_months=MAX_MONTHS, track=False):
     bal = {d["id"]: d["balance"] for d in debts}
     finish, interest_total = {}, 0.0
     first_pay, first_min, interest_by, history = {}, {}, {d["id"]: 0.0 for d in debts}, []
-    order = sorted(debts, key=lambda d: -d["rate"])     # sort keeps avalanche order on equal rates
+    # Extra money goes in the debts' order: highest rate first, or the user's own order.
+    order = sorted(debts, key=lambda d: (d.get("rank", 0), -d["rate"]))
     if not debts:
         return {"months": 0, "interest": 0.0, "finish": finish, "first_pay": {}, "first_min": {},
                 "interest_by": {}, "history": []}
@@ -307,7 +309,7 @@ def with_lump(debts, lump):
     """The debts after a one-time payment, highest rate first."""
     out = [dict(d) for d in debts]
     left = float(lump or 0)
-    for d in sorted(out, key=lambda d: -d["rate"]):
+    for d in sorted(out, key=lambda d: (d.get("rank", 0), -d["rate"])):
         pay = min(d["balance"], left)
         d["balance"] -= pay
         left -= pay

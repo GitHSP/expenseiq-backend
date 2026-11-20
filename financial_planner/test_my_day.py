@@ -183,3 +183,50 @@ class SmokeAndFocusTests(TestCase):
         after = next(s for s in r.data["plans"]["today"]["slots"] if s["id"] == slot["id"])
         self.assertTrue(after["done"])                                                # 52 of 60: done
         self.assertEqual(r.data["goals"][0]["total_done"], 52)
+
+
+class DebtPriorityTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from .models import Debt
+        self.user = get_user_model().objects.create_user(email="pr@example.test", username="pr", password="x-Test-12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        mk = lambda n, b, r: Debt.objects.create(user=self.user, name=n, current_balance=Decimal(b), annual_interest_rate=Decimal(r),
+                                                 minimum_payment=Decimal("30"))
+        self.high, self.mid, self.low = mk("High", "3000", "24"), mk("Mid", "2000", "20"), mk("Low", "500", "10")
+        from .services import recalculate_avalanche_order
+        recalculate_avalanche_order(self.user)
+
+    def names(self, data):
+        return [d["name"] for d in data]
+
+    def test_own_order_and_back(self):
+        from .outlook import _debts, simulate
+        r = self.client.post("/api/fp/debts/priority/", {"order": [self.low.id, self.high.id, self.mid.id]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.names(r.data), ["Low", "High", "Mid"])
+        # The extra money goes to Low first now.
+        sim = simulate(_debts(self.user), budget=500, track=True)
+        self.assertLess(sim["finish"][self.low.id], sim["finish"][self.mid.id])
+        pay = sim["first_pay"]
+        self.assertGreater(pay[self.low.id], max(pay[self.high.id], pay[self.mid.id]))   # Low gets the extra
+        r = self.client.post("/api/fp/debts/priority/", {"order": None}, format="json")
+        self.assertEqual(self.names(r.data), ["High", "Mid", "Low"])
+
+    def test_bad_and_other_users(self):
+        self.assertEqual(self.client.post("/api/fp/debts/priority/", {"order": "x"}, format="json").status_code, 400)
+        other = get_user_model().objects.create_user(email="pr2@example.test", username="pr2", password="x-Test-12345")
+        c = APIClient()
+        c.force_authenticate(other)
+        self.assertEqual(c.post("/api/fp/debts/priority/", {"order": [self.low.id]}, format="json").status_code, 404)
+
+    def test_aurora(self):
+        from assistant.tools import set_debt_order
+        r = set_debt_order(self.user, ["mid"])
+        self.assertTrue(r["ok"], r)
+        self.assertIn("1. Mid, 2. High, 3. Low", r["message"])
+        self.assertTrue(set_debt_order(self.user)["ok"])
+        from .models import Debt
+        self.assertEqual(list(Debt.objects.filter(user=self.user).order_by("avalanche_order").values_list("name", flat=True)),
+                         ["High", "Mid", "Low"])

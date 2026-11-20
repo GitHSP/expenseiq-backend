@@ -1136,6 +1136,35 @@ def log_smoke(user, smoked, date=None, **kwargs):
             "streak_days": s["streak"], "best_days": s["best"], "saved": s["saved"]}
 
 
+def set_debt_order(user, names=None, **kwargs):
+    """The user's own payoff order (first = gets the extra money first), or back to
+    highest interest first with no names."""
+    from financial_planner.services import sync_current_month
+    mine = Debt.objects.filter(user=user, is_active=True)
+    if not names:
+        Debt.objects.filter(user=user).update(priority=None)
+        recalculate_avalanche_order(user)
+        sync_current_month(user)
+        return {"ok": True, "message": "Back to paying the highest interest rate first."}
+    if isinstance(names, str):
+        names = [names]
+    chosen = []
+    for n in names:
+        debt, error = _find_one(mine, "name", n, "debt")
+        if error:
+            return {"ok": False, "message": error}
+        if debt not in chosen:
+            chosen.append(debt)
+    rest = [d for d in mine.order_by("avalanche_order") if d not in chosen]
+    Debt.objects.filter(user=user).update(priority=None)
+    for rank, d in enumerate(chosen + rest, start=1):
+        Debt.objects.filter(pk=d.pk).update(priority=rank)
+    recalculate_avalanche_order(user)
+    sync_current_month(user)
+    return {"ok": True, "message": "Payoff order set: " + ", ".join(f"{i}. {d.name}" for i, d in enumerate(chosen + rest, 1))
+            + ". Extra money goes to the first one until it's paid off."}
+
+
 def tick_slot(user, title, date=None, done=True, **kwargs):
     from financial_planner.day_models import Slot
     from financial_planner.day_views import _date, local_now
@@ -1155,6 +1184,7 @@ TOOL_HANDLERS = {
     "calculate": calculate,
     "get_my_day": get_my_day, "set_work_hours": set_work_hours, "add_time_goal": add_time_goal,
     "add_day_task": add_day_task, "plan_day": plan_day, "tick_slot": tick_slot, "log_smoke": log_smoke,
+    "set_debt_order": set_debt_order,
     "get_debt_history": get_debt_history,
     "get_investments": get_investments, "update_investment_value": update_investment_value,
     "add_chit_payment": add_chit_payment,
@@ -1204,7 +1234,7 @@ MUTATING_TOOLS = {
     "add_recurring_payment", "update_recurring_payment", "delete_recurring_payment",
     "add_rule", "delete_rule", "set_budget", "delete_budget", "remember", "forget",
     "update_investment_value", "add_chit_payment", "add_goal", "add_to_goal", "delete_goal",
-    "set_work_hours", "add_time_goal", "add_day_task", "plan_day", "tick_slot", "log_smoke",
+    "set_work_hours", "add_time_goal", "add_day_task", "plan_day", "tick_slot", "log_smoke", "set_debt_order",
 }
 
 
@@ -1254,6 +1284,14 @@ TOOL_SCHEMAS = [
             "bed_time": {"type": "string"}, "working": {"type": "boolean"},
             "work_start": {"type": "string"}, "work_end": {"type": "string"}},
             "required": ["date"]},
+    },
+    {
+        "name": "set_debt_order",
+        "description": ("Set which debts get the extra money first ('pay RBC 2K first, then CIBC'); the rest follow by "
+                        "interest rate. With no names: back to highest interest first. Planner, the checklist's extra "
+                        "payment and payoff plans follow this order."),
+        "input_schema": {"type": "object", "properties": {
+            "names": {"type": "array", "items": {"type": "string"}, "description": "Debts in order, first = first."}}},
     },
     {
         "name": "log_smoke",

@@ -40,6 +40,31 @@ class DebtListCreateView(generics.ListCreateAPIView):
         sync_current_month(self.request.user)
 
 
+class DebtPriorityView(APIView):
+    """POST /api/fp/debts/priority/ {"order": [debt ids, first to pay off first]} sets the
+    user's own order; {"order": null} goes back to highest interest first. The
+    month's checklist (where the extra payment goes) follows."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .services import sync_current_month
+        order = request.data.get("order")
+        mine = Debt.objects.filter(user=request.user)
+        if order is None:
+            mine.update(priority=None)
+        else:
+            if not isinstance(order, list) or not all(isinstance(i, int) for i in order) or len(set(order)) != len(order):
+                return Response({"error": "order must be a list of debt ids."}, status=status.HTTP_400_BAD_REQUEST)
+            if mine.filter(pk__in=order).count() != len(order):
+                return Response({"error": "Debt not found."}, status=status.HTTP_404_NOT_FOUND)
+            mine.update(priority=None)
+            for rank, pk in enumerate(order, start=1):
+                mine.filter(pk=pk).update(priority=rank)
+        recalculate_avalanche_order(request.user)
+        sync_current_month(request.user)
+        return Response(DebtSerializer(mine.order_by("avalanche_order"), many=True).data)
+
+
 class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class   = DebtSerializer
     permission_classes = [IsAuthenticated]
