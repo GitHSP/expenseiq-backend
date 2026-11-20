@@ -45,7 +45,7 @@ urlpatterns = [
     path('checklist/<int:pk>/toggle/',     views.ChecklistItemToggleView.as_view(),      name='fp-checklist-toggle'),
 ]
 
-from . import day_views, doc_views
+from . import access_views, day_views, doc_views
 
 urlpatterns += [
     path("day/", day_views.DayView.as_view(), name="day"),
@@ -61,6 +61,8 @@ urlpatterns += [
     path("day/smoke/", day_views.SmokeView.as_view(), name="day-smoke"),
     path("backup/", day_views.BackupView.as_view(), name="fp-backup"),
     path("documents/", doc_views.DocumentListView.as_view(), name="fp-documents"),
+    path("admin/users/", access_views.AdminUsersView.as_view(), name="fp-admin-users"),
+    path("admin/users/<int:pk>/", access_views.AdminUserView.as_view(), name="fp-admin-user"),
     path("documents/<int:pk>/", doc_views.DocumentDetailView.as_view(), name="fp-document"),
     path("day/cron/", day_views.CronView.as_view(), name="day-cron"),
 ]

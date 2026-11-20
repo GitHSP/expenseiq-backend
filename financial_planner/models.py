@@ -409,3 +409,4 @@ class SavingsGoal(models.Model):
 # My day (working week, time goals, day plans): kept in their own file.
 from .day_models import DayPlan, DayProfile, DayTask, Slot, SmokeLog, TimeGoal, WorkWeek  # noqa: E402,F401
 from .doc_models import Document  # noqa: E402,F401
+from .access import PageAccess  # noqa: E402,F401

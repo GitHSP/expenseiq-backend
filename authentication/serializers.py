@@ -45,11 +45,18 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     """
-    Returns safe user data — never returns password
+    Returns safe user data — never returns password. `pages` is what this user
+    can open (null = everything), set by an admin; see financial_planner/access.py.
     """
+    pages = serializers.SerializerMethodField()
+
     class Meta:
         model  = User
-        fields = ['id', 'email', 'username']
+        fields = ['id', 'email', 'username', 'is_staff', 'pages']
+
+    def get_pages(self, obj):
+        from financial_planner.access import allowed_pages
+        return allowed_pages(obj)
 
 
 class ChangePasswordSerializer(serializers.Serializer):

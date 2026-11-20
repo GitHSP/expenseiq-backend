@@ -110,6 +110,9 @@ class ChatView(APIView):
 
     def post(self, request):
         from .quick import answer, help_text
+        from financial_planner.access import can_use
+        if not can_use(request.user, "aurora"):
+            return Response({"error": "Aurora isn't turned on for your account."}, status=status.HTTP_403_FORBIDDEN)
         raw_messages = request.data.get("messages")
         # Common questions are answered from the user's figures, with no AI call.
         if isinstance(raw_messages, list) and raw_messages and isinstance(raw_messages[-1], dict)                 and raw_messages[-1].get("role") == "user" and isinstance(raw_messages[-1].get("content"), str):
