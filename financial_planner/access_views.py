@@ -5,12 +5,13 @@ from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .access import PAGES, PageAccess, allowed_pages
+from .access import DEFAULT_PAGES, PAGES, PageAccess, allowed_pages
 
 
 def user_json(u):
     return {"id": u.id, "email": u.email, "username": u.username, "is_staff": u.is_staff, "is_active": u.is_active,
             "pages": allowed_pages(u), "joined": u.date_joined.date().isoformat(),
+            "is_default": not u.is_staff and not PageAccess.objects.filter(user=u).exists(),
             "last_login": u.last_login.isoformat() if u.last_login else None}
 
 
@@ -20,7 +21,7 @@ class AdminUsersView(APIView):
 
     def get(self, request):
         users = get_user_model().objects.order_by("-is_staff", "email")
-        return Response({"pages": PAGES, "users": [user_json(u) for u in users]})
+        return Response({"pages": PAGES, "default_pages": DEFAULT_PAGES, "users": [user_json(u) for u in users]})
 
 
 class AdminUserView(APIView):

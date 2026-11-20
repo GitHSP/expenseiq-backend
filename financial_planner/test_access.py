@@ -13,7 +13,8 @@ class PageAccessTests(TestCase):
         self.f.force_authenticate(self.friend)
 
     def test_admin_sets_pages_and_the_user_sees_them(self):
-        self.assertIsNone(self.f.get("/api/auth/me/").data["pages"])                      # all pages by default
+        self.assertEqual(self.f.get("/api/auth/me/").data["pages"],                       # the default four
+                         ["dashboard", "expenses", "analytics", "payments"])
         r = self.a.patch(f"/api/fp/admin/users/{self.friend.id}/", {"pages": ["dashboard", "payments"]}, format="json")
         self.assertEqual(r.data["pages"], ["dashboard", "payments"])
         me = self.f.get("/api/auth/me/").data
@@ -28,6 +29,13 @@ class PageAccessTests(TestCase):
         self.assertEqual(len(self.a.get("/api/fp/admin/users/").data["users"]), 2)
         self.a.patch(f"/api/fp/admin/users/{self.admin.id}/", {"pages": []}, format="json")
         self.assertIsNone(self.a.get("/api/auth/me/").data["pages"])                      # staff: never locked out
+
+    @override_settings(ANTHROPIC_API_KEY="")
+    def test_aurora_off_by_default(self):
+        r = self.f.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": "hi"}]}, format="json")
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.a.post("/api/assistant/chat/", {"messages": [{"role": "user", "content": "hi"}]},
+                                     format="json").status_code, 200)            # the admin always has it
 
     @override_settings(ANTHROPIC_API_KEY="")
     def test_aurora_blocked_on_the_server(self):

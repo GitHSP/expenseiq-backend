@@ -1,3 +1,4 @@
+from unittest import mock
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -111,6 +112,7 @@ class BulkDeleteApiTests(TestCase):
         self.assertEqual(res.status_code, 400)
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class FalseClaimReplyTests(TestCase):
     """If the model claims a change that a tool refused, the user sees what happened instead."""
 
@@ -194,6 +196,7 @@ class SearchTransactionsToolTests(TestCase):
         self.assertTrue(TOOL_HANDLERS["get_accounts_overview"](self.user)["ok"])
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class SearchThroughChatTests(SearchTransactionsToolTests):
     """The chat endpoint runs search_transactions when the model asks for it."""
 
@@ -219,6 +222,7 @@ class SearchThroughChatTests(SearchTransactionsToolTests):
         self.assertEqual(res.data["actions"], [])
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class GroundingCheckTests(SearchTransactionsToolTests):
     """Amounts Aurora states must come from this reply's tool results."""
 
@@ -252,6 +256,7 @@ class GroundingCheckTests(SearchTransactionsToolTests):
         self.assertNotIn("verify", reply)
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class CalculateToolTests(TestCase):
     """Aurora adds and subtracts with the calculate tool, and its results pass the accuracy check."""
 

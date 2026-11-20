@@ -11,6 +11,7 @@ from financial_planner.models import Debt, RecurringItem, SavingsGoal
 from .quick import answer
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class QuickAnswerTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(email="qa@example.test", username="qa", password="x-Test-12345")
@@ -132,6 +133,7 @@ class ChatLoggingTests(TestCase):
         self.assertEqual(Expense.objects.count(), before)
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class LearnedQuestionTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(email="lq@example.test", username="lq", password="x-Test-12345")

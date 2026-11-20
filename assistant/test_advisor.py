@@ -69,6 +69,7 @@ class RuleTests(Base):
         self.assertFalse(MerchantRule.objects.exists())
 
 
+@mock.patch("financial_planner.access.DEFAULT_PAGES", ["aurora"])   # these test users have Aurora switched on
 class BudgetAndMemoryTests(Base):
     def test_budget_tracks_spending(self):
         today = date.today()
