@@ -1137,15 +1137,15 @@ def log_smoke(user, smoked, date=None, **kwargs):
 
 
 def set_debt_order(user, names=None, **kwargs):
-    """The user's own payoff order (first = gets the extra money first), or back to
-    highest interest first with no names."""
+    """Urgent debts, paid first in this order (a friend's loan); everything else
+    stays highest interest first. No names: no urgent debts."""
     from financial_planner.services import sync_current_month
     mine = Debt.objects.filter(user=user, is_active=True)
     if not names:
         Debt.objects.filter(user=user).update(priority=None)
         recalculate_avalanche_order(user)
         sync_current_month(user)
-        return {"ok": True, "message": "Back to paying the highest interest rate first."}
+        return {"ok": True, "message": "No urgent debts: back to paying the highest interest rate first."}
     if isinstance(names, str):
         names = [names]
     chosen = []
@@ -1155,14 +1155,13 @@ def set_debt_order(user, names=None, **kwargs):
             return {"ok": False, "message": error}
         if debt not in chosen:
             chosen.append(debt)
-    rest = [d for d in mine.order_by("avalanche_order") if d not in chosen]
     Debt.objects.filter(user=user).update(priority=None)
-    for rank, d in enumerate(chosen + rest, start=1):
+    for rank, d in enumerate(chosen, start=1):
         Debt.objects.filter(pk=d.pk).update(priority=rank)
     recalculate_avalanche_order(user)
     sync_current_month(user)
-    return {"ok": True, "message": "Payoff order set: " + ", ".join(f"{i}. {d.name}" for i, d in enumerate(chosen + rest, 1))
-            + ". Extra money goes to the first one until it's paid off."}
+    return {"ok": True, "message": "Urgent, paid first: " + ", ".join(f"{i}. {d.name}" for i, d in enumerate(chosen, 1))
+            + ". The rest stay highest interest first."}
 
 
 def tick_slot(user, title, date=None, done=True, **kwargs):
@@ -1287,9 +1286,9 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "set_debt_order",
-        "description": ("Set which debts get the extra money first ('pay RBC 2K first, then CIBC'); the rest follow by "
-                        "interest rate. With no names: back to highest interest first. Planner, the checklist's extra "
-                        "payment and payoff plans follow this order."),
+        "description": ("Mark urgent debts, paid first in the order given ('pay my friend's loan first, then RBC 2K'); "
+                        "the rest stay highest interest first. Give ALL the urgent ones each time (it replaces the list); "
+                        "no names clears them. The checklist's extra payment and payoff plans follow it."),
         "input_schema": {"type": "object", "properties": {
             "names": {"type": "array", "items": {"type": "string"}, "description": "Debts in order, first = first."}}},
     },

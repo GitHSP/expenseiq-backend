@@ -225,8 +225,35 @@ class DebtPriorityTests(TestCase):
         from assistant.tools import set_debt_order
         r = set_debt_order(self.user, ["mid"])
         self.assertTrue(r["ok"], r)
-        self.assertIn("1. Mid, 2. High, 3. Low", r["message"])
+        self.assertIn("1. Mid", r["message"])
+        from .models import Debt
+        order = list(Debt.objects.filter(user=self.user).order_by("avalanche_order").values_list("name", "priority"))
+        self.assertEqual(order, [("Mid", 1), ("High", None), ("Low", None)])     # the rest stay by interest
         self.assertTrue(set_debt_order(self.user)["ok"])
         from .models import Debt
         self.assertEqual(list(Debt.objects.filter(user=self.user).order_by("avalanche_order").values_list("name", flat=True)),
                          ["High", "Mid", "Low"])
+
+
+class ZeroInterestFirstTests(TestCase):
+    def test_a_friends_loan_put_first_gets_the_checklist_extra(self):
+        from decimal import Decimal
+        from .models import Debt, RecurringItem
+        from .services import get_or_create_current_plan, recalculate_avalanche_order, sync_month_checklist
+        user = get_user_model().objects.create_user(email="zf@example.test", username="zf", password="x-Test-12345")
+        RecurringItem.objects.create(user=user, label="Pay", amount=Decimal("2000"), category="income", due_day=1)
+        card = Debt.objects.create(user=user, name="Card", current_balance=Decimal("3000"), annual_interest_rate=Decimal("20"),
+                                   minimum_payment=Decimal("60"))
+        friend = Debt.objects.create(user=user, name="Friend", debt_type="other", current_balance=Decimal("800"),
+                                     annual_interest_rate=Decimal("0"), minimum_payment=Decimal("0"))
+        recalculate_avalanche_order(user)
+        plan, _ = get_or_create_current_plan(user)
+
+        def extra():
+            sync_month_checklist(plan)
+            return [i.linked_debt.name for i in plan.checklist_items.filter(category="debt_extra")]
+        self.assertEqual(extra(), ["Card"])                       # highest interest first: 0% is skipped
+        Debt.objects.filter(pk=friend.pk).update(priority=1)
+        Debt.objects.filter(pk=card.pk).update(priority=2)
+        recalculate_avalanche_order(user)
+        self.assertEqual(extra(), ["Friend"])                     # the user's own order: the friend first

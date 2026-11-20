@@ -215,7 +215,10 @@ def _desired_items(user, year=None, month=None):
     surplus = max(income - outgoing, Decimal("0.00"))
 
     top_debt = debts[0] if debts else None
-    if top_debt and top_debt.annual_interest_rate > 0:
+    # A 0% debt only gets the extra when the user put it first themselves
+    # (e.g. money borrowed from a friend); highest-interest-first skips it.
+    own_order = any(d.priority is not None for d in debts)
+    if top_debt and (top_debt.annual_interest_rate > 0 or own_order):
         desired.append((("debt_extra", top_debt.id), dict(
             label=f"{top_debt.name} — EXTRA avalanche payment (all surplus)",
             amount=min(surplus, top_debt.current_balance),
