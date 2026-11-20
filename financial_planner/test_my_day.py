@@ -293,6 +293,23 @@ class ExtraOnlyToTheFirstTests(TestCase):
                                     minimum_payment=Decimal("0"))
         recalculate_avalanche_order(user)
         s = build_outlook(user)["scenarios"]["planner"]["debts"]
-        self.assertEqual(s[str(nomin.id)]["extra"], 0)              # its $10 is what it needs, not extra
-        self.assertEqual(s[str(nomin.id)]["minimum"], 10)
+        self.assertEqual(s[str(nomin.id)]["extra"], 0)
+        self.assertEqual(s[str(nomin.id)]["minimum"], 0)             # 0% with a $0 minimum: nothing until its turn
         self.assertGreater(s[str(top.id)]["extra"], 800)             # the real extra goes to the first debt
+
+
+class CardFloorTests(TestCase):
+    def test_an_interest_card_with_no_minimum_still_pays_10(self):
+        from decimal import Decimal
+        from .models import Debt, RecurringItem
+        from .outlook import build_outlook
+        from .services import recalculate_avalanche_order
+        user = get_user_model().objects.create_user(email="cf@example.test", username="cf", password="x-Test-12345")
+        RecurringItem.objects.create(user=user, label="Pay", amount=Decimal("1000"), category="income")
+        Debt.objects.create(user=user, name="Top", current_balance=Decimal("5000"), annual_interest_rate=Decimal("25"),
+                            minimum_payment=Decimal("100"))
+        card = Debt.objects.create(user=user, name="Card", current_balance=Decimal("600"), annual_interest_rate=Decimal("12"),
+                                   minimum_payment=Decimal("0"))
+        recalculate_avalanche_order(user)
+        s = build_outlook(user)["scenarios"]["planner"]["debts"][str(card.id)]
+        self.assertEqual((s["minimum"], s["extra"]), (16.0, 0))     # $6 interest + $10 off the balance

@@ -43,7 +43,9 @@ def _debts(user):
     for d in Debt.objects.filter(user=user, is_active=True, current_balance__gt=0).order_by("avalanche_order", "id"):
         balance, rate = float(d.current_balance), float(d.annual_interest_rate) / 100
         pays = linked.get(d.id, float(d.minimum_payment))
-        follows_interest = d.debt_type == "credit_card" and d.id not in linked
+        # A card's minimum follows its interest (at least $10 off the balance). A 0%
+        # debt has no interest to follow: its own minimum (even $0) is what it needs.
+        follows_interest = d.debt_type == "credit_card" and d.id not in linked and rate > 0
         out.append({"id": d.id, "name": d.name, "balance": balance, "rate": rate, "pays": pays,
                     "rank": d.avalanche_order,                  # the user's own order, or highest rate first
                     "follows_interest": follows_interest, "is_card": d.debt_type == "credit_card",
