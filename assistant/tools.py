@@ -1148,6 +1148,8 @@ def set_debt_order(user, names=None, **kwargs):
         return {"ok": True, "message": "No urgent debts: back to paying the highest interest rate first."}
     if isinstance(names, str):
         names = [names]
+    if len(names) > 3:
+        return {"ok": False, "message": "Up to 3 urgent debts; the rest stay highest interest first. Which 3?"}
     chosen = []
     for n in names:
         debt, error = _find_one(mine, "name", n, "debt")

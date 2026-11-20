@@ -335,8 +335,11 @@ def build_outlook(user, target_months=36, budget=None, today=None, debt_ids=None
     pay_budget = for_chosen(pay_budget)
     active = RecurringItem.objects.filter(user=user, is_active=True)
     pay_rows = [(r.label, float(r.amount) * PER_MONTH.get(r.frequency, 1)) for r in active.filter(category="income")]
+    # Payments linked to a debt with a balance are that debt's payment (counted
+    # with the debts); one linked to a debt that's paid off is just a bill now.
+    owing = {d["id"] for d in all_debts}
     bill_rows = [(r.label, float(r.amount) * PER_MONTH.get(r.frequency, 1))
-                 for r in active.filter(debt__isnull=True).exclude(category="income")]
+                 for r in active.exclude(category="income") if r.debt_id is None or r.debt_id not in owing]
     bills = sum(amount for _, amount in bill_rows)
     fund = EmergencyFund.objects.filter(user=user).first()
     savings = float(fund.monthly_contribution) if fund and not fund.is_funded else 0.0

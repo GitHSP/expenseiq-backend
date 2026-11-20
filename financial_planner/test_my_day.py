@@ -257,3 +257,23 @@ class ZeroInterestFirstTests(TestCase):
         Debt.objects.filter(pk=card.pk).update(priority=2)
         recalculate_avalanche_order(user)
         self.assertEqual(extra(), ["Friend"])                     # the user's own order: the friend first
+
+
+class UrgentLimitAndBillsTests(TestCase):
+    def test_up_to_three_and_paid_off_debt_payment_is_a_bill(self):
+        from decimal import Decimal
+        from .models import Debt, RecurringItem
+        from .outlook import build_outlook
+        user = get_user_model().objects.create_user(email="ul@example.test", username="ul", password="x-Test-12345")
+        c = APIClient()
+        c.force_authenticate(user)
+        ds = [Debt.objects.create(user=user, name=f"D{i}", current_balance=Decimal("100"), annual_interest_rate=Decimal("10"),
+                                  minimum_payment=Decimal("10")) for i in range(4)]
+        self.assertEqual(c.post("/api/fp/debts/priority/", {"order": [d.id for d in ds]}, format="json").status_code, 400)
+        self.assertEqual(c.post("/api/fp/debts/priority/", {"order": [d.id for d in ds[:3]]}, format="json").status_code, 200)
+        paid = Debt.objects.create(user=user, name="Old", current_balance=Decimal("0"), annual_interest_rate=Decimal("5"),
+                                   minimum_payment=Decimal("0"), is_active=False)
+        RecurringItem.objects.create(user=user, label="Pay", amount=Decimal("2000"), category="income")
+        RecurringItem.objects.create(user=user, label="Old loan payment", amount=Decimal("250"), debt=paid)
+        o = build_outlook(user)
+        self.assertEqual(o["basis"]["planner_bills"], 250.0)          # still leaves the bank: a bill

@@ -40,6 +40,9 @@ class DebtListCreateView(generics.ListCreateAPIView):
         sync_current_month(self.request.user)
 
 
+MAX_URGENT = 3          # more than this and it's no longer highest-interest-first
+
+
 class DebtPriorityView(APIView):
     """POST /api/fp/debts/priority/ {"order": [debt ids, first to pay off first]} sets the
     user's own order; {"order": null} goes back to highest interest first. The
@@ -55,6 +58,9 @@ class DebtPriorityView(APIView):
         else:
             if not isinstance(order, list) or not all(isinstance(i, int) for i in order) or len(set(order)) != len(order):
                 return Response({"error": "order must be a list of debt ids."}, status=status.HTTP_400_BAD_REQUEST)
+            if len(order) > MAX_URGENT:
+                return Response({"error": f"Up to {MAX_URGENT} urgent debts; the rest stay highest interest first."},
+                                status=status.HTTP_400_BAD_REQUEST)
             if mine.filter(pk__in=order).count() != len(order):
                 return Response({"error": "Debt not found."}, status=status.HTTP_404_NOT_FOUND)
             mine.update(priority=None)
