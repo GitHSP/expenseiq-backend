@@ -224,15 +224,19 @@ def _utilization(debts, history, today):
 def _scenario(result, debts, today, budget=None):
     months = result["months"]
     paid = result["first_pay"]
+    # What each debt needs this month: its minimum, or for a card, the interest plus
+    # at least $10 off the balance (a card with no minimum set still needs paying).
+    due = result.get("first_min") or {}
     return {**_when(months, today),
             "interest": round(result["interest"], 2) if months else None,
             "budget": budget,
             "balances": [round(sum(row.values())) for row in result["history"]],
             "debts": {str(d["id"]): {
                 "payment": round(paid.get(d["id"], 0), 2),
-                # The minimum as the Planner has it, so these add up with the debt minimums shown elsewhere.
-                "minimum": round(pay_now if budget is None else min(d["pays"], pay_now), 2),
-                "extra": round(0 if budget is None else max(pay_now - d["pays"], 0), 2),
+                # Only money above what the debt needs counts as extra, so the extra
+                # goes where the plan says: the first debt in the payoff order.
+                "minimum": round(pay_now if budget is None else min(due.get(d["id"], d["pays"]), pay_now), 2),
+                "extra": round(0 if budget is None else max(pay_now - due.get(d["id"], d["pays"]), 0), 2),
                 "interest": round(result["interest_by"][d["id"]], 2) if months else None,
                 **_when(result["finish"].get(d["id"]), today),
             } for d, pay_now in ((d, paid.get(d["id"], 0)) for d in debts)},

@@ -277,3 +277,22 @@ class UrgentLimitAndBillsTests(TestCase):
         RecurringItem.objects.create(user=user, label="Old loan payment", amount=Decimal("250"), debt=paid)
         o = build_outlook(user)
         self.assertEqual(o["basis"]["planner_bills"], 250.0)          # still leaves the bank: a bill
+
+
+class ExtraOnlyToTheFirstTests(TestCase):
+    def test_a_card_with_no_minimum_is_not_shown_as_extra(self):
+        from decimal import Decimal
+        from .models import Debt, RecurringItem
+        from .outlook import build_outlook
+        from .services import recalculate_avalanche_order
+        user = get_user_model().objects.create_user(email="ex@example.test", username="ex", password="x-Test-12345")
+        RecurringItem.objects.create(user=user, label="Pay", amount=Decimal("1000"), category="income")
+        top = Debt.objects.create(user=user, name="Top", current_balance=Decimal("5000"), annual_interest_rate=Decimal("20"),
+                                  minimum_payment=Decimal("100"))
+        nomin = Debt.objects.create(user=user, name="No minimum", current_balance=Decimal("800"), annual_interest_rate=Decimal("0"),
+                                    minimum_payment=Decimal("0"))
+        recalculate_avalanche_order(user)
+        s = build_outlook(user)["scenarios"]["planner"]["debts"]
+        self.assertEqual(s[str(nomin.id)]["extra"], 0)              # its $10 is what it needs, not extra
+        self.assertEqual(s[str(nomin.id)]["minimum"], 10)
+        self.assertGreater(s[str(top.id)]["extra"], 800)             # the real extra goes to the first debt
